@@ -12,18 +12,23 @@ import org.apache.spark.sql.SparkSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class IcebergTableWriter implements TableWriter {
-    private static final Logger log = LoggerFactory.getLogger(IcebergTableWriter.class);
+public class DeltaTableWriter implements TableWriter {
+    private static final Logger log = LoggerFactory.getLogger(DeltaTableWriter.class);
     private static final Pattern INPUT_FILE_NAME =
             Pattern.compile("^(.+)-(\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2})\\.jsonl$");
     private static final String INCOMING_VIEW = "incoming_cdc";
-    private static final String WAREHOUSE_CONFIG = "spark.sql.catalog.local_catalog.warehouse";
 
-    public IcebergTableWriter() {
+    private final DeltaTableOperations deltaOperations;
+
+    public DeltaTableWriter() {
+        this(new DeltaTableOperations());
+    }
+
+    public DeltaTableWriter(DeltaTableOperations deltaOperations) {
+        this.deltaOperations = deltaOperations;
     }
 
     private String getTableFqn(Path inputFilePath) {
-        // geo.public.scalars-2026-05-31_02-51-21.jsonl
         String fileName = inputFilePath.getFileName().toString();
         Matcher matcher = INPUT_FILE_NAME.matcher(fileName);
         if (matcher.matches()) {
@@ -36,8 +41,6 @@ public class IcebergTableWriter implements TableWriter {
     public void writeToTable(SparkSession spark, Path inputFilePath, Path dataDirectoryBasePath) {
         log.info("writing to table: {}", inputFilePath.getFileName());
 
-        spark.conf().set(WAREHOUSE_CONFIG, dataDirectoryBasePath.toAbsolutePath().toString());
-
         String tableFQN = this.getTableFqn(inputFilePath);
         log.info("table FQN: {}", tableFQN);
         DebeziumPayloadFlattener flattener = new DebeziumPayloadFlattener();
@@ -49,46 +52,20 @@ public class IcebergTableWriter implements TableWriter {
         Date now = new Date();
         Dataset<Row> partitioned = flattener.addDatePartitionColumns(withTimestamps, now);
         Path outputTablePath = flattener.getOutputTablePath(tableFQN, dataDirectoryBasePath);
-        String catalogTable = toCatalogTableName(tableFQN);
         log.info("output table path: {}", outputTablePath);
-        log.info("catalog table: {}", catalogTable);
 
         partitioned.createOrReplaceTempView(INCOMING_VIEW);
 
-        if (!spark.catalog().tableExists(catalogTable)) {
-            log.info("creating iceberg table {}", catalogTable);
-            spark.sql(String.format(
-                    """
-                    CREATE TABLE %s
-                    USING iceberg
-                    PARTITIONED BY (year, month, day)
-                    AS SELECT * FROM %s
-                    """,
-                    toSqlTableName(tableFQN),
-                    INCOMING_VIEW));
+        if (!deltaOperations.tableExists(spark, outputTablePath)) {
+            log.info("creating delta table at {}", outputTablePath);
+            deltaOperations.createPartitionedTable(partitioned, outputTablePath);
         } else {
-            log.info("appending to iceberg table {}", catalogTable);
-            spark.sql(String.format(
-                    """
-                    INSERT INTO %s
-                    SELECT * FROM %s
-                    """,
-                    toSqlTableName(tableFQN),
-                    INCOMING_VIEW));
+            log.info("appending to delta table at {}", outputTablePath);
+            deltaOperations.appendToTable(partitioned, outputTablePath);
         }
     }
 
-    private String toCatalogTableName(String tableFQN) {
-        String[] parts = tableFQN.split("\\.");
-        return String.format("local_catalog.%s.%s.%s", parts[0], parts[1], parts[2]);
-    }
-
-    private String toSqlTableName(String tableFQN) {
-        String[] parts = tableFQN.split("\\.");
-        return String.format("local_catalog.`%s`.`%s`.`%s`", parts[0], parts[1], parts[2]);
-    }
-
-    public static void main(String[] args) {
+    public void run() {
         String inputFile = System.getProperty("input.file.path");
         String dataDirectoryBase = System.getProperty("data.directory.base.path");
         Objects.requireNonNull(inputFile, "input.file.path is required");
@@ -97,11 +74,15 @@ public class IcebergTableWriter implements TableWriter {
         Path dataDirectoryBasePath = Path.of(dataDirectoryBase);
         dataDirectoryBasePath.toFile().mkdirs();
 
-        SparkSession spark = new SparkSessionFactory().createIcebergTableSparkSession(dataDirectoryBasePath);
+        SparkSession spark = new SparkSessionFactory().createDeltaTableSparkSession(dataDirectoryBasePath);
         try {
-            new IcebergTableWriter().writeToTable(spark, inputFilePath, dataDirectoryBasePath);
+            writeToTable(spark, inputFilePath, dataDirectoryBasePath);
         } finally {
             spark.stop();
         }
+    }
+
+    public static void main(String[] args) {
+        new DeltaTableWriter().run();
     }
 }

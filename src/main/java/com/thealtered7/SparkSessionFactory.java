@@ -12,21 +12,18 @@ public class SparkSessionFactory {
     public SparkSessionFactory() {
     }
 
-    public SparkSession createDeltaTableSparkSession() {
-        log.info("creating delta table spark session");
+    public SparkSession createDeltaTableSparkSession(Path warehousePath) {
+        log.info("creating delta table spark session with warehouse: {}", warehousePath);
         SparkSession spark = SparkSession.builder()
                 .appName("Write to Delta Lake")
                 .master("local[*]")
                 .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
                 .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-                .config("spark.sql.shuffle.partitions", "4")                
+                .config("spark.sql.warehouse.dir", warehousePath.toString())
+                .config("spark.sql.shuffle.partitions", "4")
                 .getOrCreate();
         spark.sparkContext().setLogLevel("WARN");
         return spark;
-    }
-
-    public SparkSession createIcebergTableSparkSession() {
-        return createIcebergTableSparkSession(Path.of("path/to/local/iceberg_warehouse"));
     }
 
     public SparkSession createIcebergTableSparkSession(Path warehousePath) {

@@ -20,7 +20,7 @@ SPARK_JVM_ARGS := \
 	--add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
 	--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED
 
-.PHONY: bootstrap compile test run clean build-docker run-iceberg-table-writer
+.PHONY: bootstrap compile test run clean build-docker run-iceberg-table-writer run-delta-table-writer
 
 # One-time: create gradlew + gradle/wrapper/* (requires `gradle` on PATH)
 bootstrap:
@@ -43,9 +43,18 @@ run: $(GRADLEW)
 run-iceberg-table-writer: $(GRADLEW)
 	$(GRADLEW) installDist -q
 	HADOOP_USER_NAME=testuser java $(SPARK_JVM_ARGS) -cp "build/install/open-tables-writer/lib/*" \
-		-Dinput.file.path="/home/jkeene/src/pgoutput_to_json/pgoutput_to_json_data/geo.public.scalars-2026-05-31_02-51-21.jsonl" \
+		-Dinput.file.path="/home/jkeene/src/pgoutput_to_json/pgoutput_to_json_data/geo.public.scalars-2026-06-01_02-14-58.jsonl" \
 		-Ddata.directory.base.path="/opt/data/iceberg" \
 		com.thealtered7.IcebergTableWriter
+
+# "/home/jkeene/src/pgoutput_to_json/pgoutput_to_json_data/geo.public.scalars-2026-05-31_02-51-21.jsonl" \
+# "/home/jkeene/src/pgoutput_to_json/pgoutput_to_json_data/geo.public.scalars-2026-06-01_02-14-58.jsonl" \
+run-delta-table-writer: $(GRADLEW)
+	$(GRADLEW) installDist -q
+	HADOOP_USER_NAME=testuser java $(SPARK_JVM_ARGS) -cp "build/install/open-tables-writer/lib/*" \
+		-Dinput.file.path="/home/jkeene/src/pgoutput_to_json/pgoutput_to_json_data/geo.public.scalars-2026-05-31_02-51-21.jsonl" \
+		-Ddata.directory.base.path="/opt/data/deltatable" \
+		com.thealtered7.DeltaTableWriter
 
 clean: $(GRADLEW)
 	$(GRADLEW) clean
