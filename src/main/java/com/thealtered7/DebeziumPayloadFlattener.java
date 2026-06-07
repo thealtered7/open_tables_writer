@@ -1,10 +1,15 @@
 package com.thealtered7;
 
+import com.thealtered7.observability.Observability;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import org.apache.spark.sql.Column;
@@ -25,14 +30,44 @@ public final class DebeziumPayloadFlattener {
     private static final Set<String> TOP_LEVEL_FIELDS = Set.of("op", "transaction", "ts_ms", "ts_ns", "ts_us");
     private static final String ISO_TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss[.SSSSSS]'Z'";
 
+    private final Observability observability;
+
     public DebeziumPayloadFlattener() {
+        this(Observability.noop());
+    }
+
+    public DebeziumPayloadFlattener(Observability observability) {
+        this.observability = Objects.requireNonNull(observability, "observability");
     }
 
     public Dataset<Row> loadJsonLines(SparkSession spark, Path inputFilePath) {
-        return spark.read().json(inputFilePath.toString());
+        try {
+            return observability.observeCallable(
+                    Observability.DEBEZIUM_PAYLOAD_FLATTENER_PREFIX,
+                    "load_json_lines",
+                    Map.of("input_file", inputFilePath.toString()),
+                    () -> {
+                        InputFileWaiter.requireFile(inputFilePath);
+                        return spark.read().json(inputFilePath.toString());
+                    });
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public Dataset<Row> flattenPayload(Dataset<Row> raw) {
+        try {
+            return observability.observeCallable(
+                    Observability.DEBEZIUM_PAYLOAD_FLATTENER_PREFIX,
+                    "flatten_payload",
+                    Collections.emptyMap(),
+                    () -> flattenPayloadInternal(raw));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private Dataset<Row> flattenPayloadInternal(Dataset<Row> raw) {
         StructType payloadSchema = (StructType) raw.schema().apply("payload").dataType();
 
         List<Column> columns = new ArrayList<>();
@@ -56,6 +91,18 @@ public final class DebeziumPayloadFlattener {
     }
 
     public Dataset<Row> convertTimestampColumns(Dataset<Row> flat) {
+        try {
+            return observability.observeCallable(
+                    Observability.DEBEZIUM_PAYLOAD_FLATTENER_PREFIX,
+                    "convert_timestamp_columns",
+                    Collections.emptyMap(),
+                    () -> convertTimestampColumnsInternal(flat));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private Dataset<Row> convertTimestampColumnsInternal(Dataset<Row> flat) {
         List<Column> columns = new ArrayList<>();
         for (StructField field : flat.schema().fields()) {
             String name = field.name();
@@ -73,6 +120,18 @@ public final class DebeziumPayloadFlattener {
     }
 
     public Path getOutputTablePath(String tableFQN, Path dataDirectoryBasePath) {
+        try {
+            return observability.observeCallable(
+                    Observability.DEBEZIUM_PAYLOAD_FLATTENER_PREFIX,
+                    "get_output_table_path",
+                    Map.of("table", tableFQN),
+                    () -> getOutputTablePathInternal(tableFQN, dataDirectoryBasePath));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private Path getOutputTablePathInternal(String tableFQN, Path dataDirectoryBasePath) {
         String[] tableParts = tableFQN.split("\\.");
         String instance = tableParts[0];
         String schema = tableParts[1];
@@ -84,6 +143,18 @@ public final class DebeziumPayloadFlattener {
     }
 
     public DatePartition getDatePartition(Date now) {
+        try {
+            return observability.observeCallable(
+                    Observability.DEBEZIUM_PAYLOAD_FLATTENER_PREFIX,
+                    "get_date_partition",
+                    Collections.emptyMap(),
+                    () -> getDatePartitionInternal(now));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private DatePartition getDatePartitionInternal(Date now) {
         Calendar calendar = Calendar.getInstance();
         calendar.setTime(now);
         return new DatePartition(
@@ -93,7 +164,19 @@ public final class DebeziumPayloadFlattener {
     }
 
     public Dataset<Row> addDatePartitionColumns(Dataset<Row> df, Date now) {
-        DatePartition partition = getDatePartition(now);
+        try {
+            return observability.observeCallable(
+                    Observability.DEBEZIUM_PAYLOAD_FLATTENER_PREFIX,
+                    "add_date_partition_columns",
+                    Collections.emptyMap(),
+                    () -> addDatePartitionColumnsInternal(df, now));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private Dataset<Row> addDatePartitionColumnsInternal(Dataset<Row> df, Date now) {
+        DatePartition partition = getDatePartitionInternal(now);
         return df.withColumn("year", lit(partition.year()))
                 .withColumn("month", lit(partition.month()))
                 .withColumn("day", lit(partition.day()));

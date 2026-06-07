@@ -4,6 +4,7 @@ WORKDIR /build
 
 COPY gradlew gradlew.bat settings.gradle.kts build.gradle.kts gradle.properties ./
 COPY gradle/wrapper/ gradle/wrapper/
+COPY config/ config/
 COPY src/ src/
 
 RUN chmod +x gradlew && ./gradlew installDist --no-daemon

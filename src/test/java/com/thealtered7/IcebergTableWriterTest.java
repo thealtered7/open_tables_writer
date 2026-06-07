@@ -99,11 +99,11 @@ class IcebergTableWriterTest {
     }
 
     @Test
-    void mainRequiresInputFilePathSystemProperty() {
+    void oneShotRequiresInputFilePathSystemProperty() {
         System.clearProperty("input.file.path");
         System.clearProperty("data.directory.base.path");
 
-        assertThrowsExactly(NullPointerException.class, () -> IcebergTableWriter.main(new String[0]));
+        assertThrowsExactly(NullPointerException.class, () -> IcebergTableWriterOneShot.main(new String[] {}));
     }
 
     private static String invokeGetTableFqn(IcebergTableWriter writer, Path inputFile) {

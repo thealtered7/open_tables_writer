@@ -6,4 +6,4 @@ if [ "$#" -gt 0 ]; then
   shift
 fi
 
-exec java -cp "/app/lib/*" "$MAIN_CLASS" "$@"
+exec java ${SPARK_JVM_ARGS:-} -cp "/app/lib/*" "$MAIN_CLASS" "$@"

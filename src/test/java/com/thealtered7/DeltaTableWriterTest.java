@@ -99,11 +99,11 @@ class DeltaTableWriterTest {
     }
 
     @Test
-    void runRequiresInputFilePathSystemProperty() {
+    void oneShotRequiresInputFilePathSystemProperty() {
         System.clearProperty("input.file.path");
         System.clearProperty("data.directory.base.path");
 
-        assertThrowsExactly(NullPointerException.class, () -> new DeltaTableWriter().run());
+        assertThrowsExactly(NullPointerException.class, () -> DeltaTableWriterOneShot.main(new String[] {}));
     }
 
     private static String invokeGetTableFqn(DeltaTableWriter writer, Path inputFile) {

@@ -1,10 +1,10 @@
 package com.thealtered7;
 
+import com.thealtered7.observability.Observability;
 import java.nio.file.Path;
 import java.util.Date;
+import java.util.Map;
 import java.util.Objects;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -14,33 +14,48 @@ import org.slf4j.LoggerFactory;
 
 public class IcebergTableWriter implements TableWriter {
     private static final Logger log = LoggerFactory.getLogger(IcebergTableWriter.class);
-    private static final Pattern INPUT_FILE_NAME =
-            Pattern.compile("^(.+)-(\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2})\\.jsonl$");
     private static final String INCOMING_VIEW = "incoming_cdc";
     private static final String WAREHOUSE_CONFIG = "spark.sql.catalog.local_catalog.warehouse";
 
+    private final Observability observability;
+
     public IcebergTableWriter() {
+        this(Observability.noop());
+    }
+
+    public IcebergTableWriter(Observability observability) {
+        this.observability = Objects.requireNonNull(observability, "observability");
     }
 
     private String getTableFqn(Path inputFilePath) {
-        // geo.public.scalars-2026-05-31_02-51-21.jsonl
-        String fileName = inputFilePath.getFileName().toString();
-        Matcher matcher = INPUT_FILE_NAME.matcher(fileName);
-        if (matcher.matches()) {
-            return matcher.group(1);
-        }
-        return fileName.replaceFirst("\\.jsonl$", "");
+        return CdcInputFileNames.tableFqnFromFileName(inputFilePath.getFileName().toString());
     }
 
     @Override
     public void writeToTable(SparkSession spark, Path inputFilePath, Path dataDirectoryBasePath) {
+        String tableFQN = this.getTableFqn(inputFilePath);
+        try {
+            observability.observeCallableVoid(
+                    Observability.ICEBERG_TABLE_WRITER_PREFIX,
+                    "write_to_table",
+                    Map.of("table", tableFQN, "input_file", inputFilePath.toString()),
+                    () -> {
+                        writeToTableInternal(spark, inputFilePath, dataDirectoryBasePath, tableFQN);
+                        return "success";
+                    });
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void writeToTableInternal(
+            SparkSession spark, Path inputFilePath, Path dataDirectoryBasePath, String tableFQN) {
         log.info("writing to table: {}", inputFilePath.getFileName());
 
         spark.conf().set(WAREHOUSE_CONFIG, dataDirectoryBasePath.toAbsolutePath().toString());
 
-        String tableFQN = this.getTableFqn(inputFilePath);
         log.info("table FQN: {}", tableFQN);
-        DebeziumPayloadFlattener flattener = new DebeziumPayloadFlattener();
+        DebeziumPayloadFlattener flattener = new DebeziumPayloadFlattener(observability);
         Dataset<Row> raw = flattener.loadJsonLines(spark, inputFilePath);
         Dataset<Row> flat = flattener.flattenPayload(raw);
         Dataset<Row> withTimestamps = flattener.convertTimestampColumns(flat);
@@ -89,19 +104,9 @@ public class IcebergTableWriter implements TableWriter {
     }
 
     public static void main(String[] args) {
-        String inputFile = System.getProperty("input.file.path");
-        String dataDirectoryBase = System.getProperty("data.directory.base.path");
-        Objects.requireNonNull(inputFile, "input.file.path is required");
-        Objects.requireNonNull(dataDirectoryBase, "data.directory.base.path is required");
-        Path inputFilePath = Path.of(inputFile);
-        Path dataDirectoryBasePath = Path.of(dataDirectoryBase);
-        dataDirectoryBasePath.toFile().mkdirs();
-
-        SparkSession spark = new SparkSessionFactory().createIcebergTableSparkSession(dataDirectoryBasePath);
-        try {
-            new IcebergTableWriter().writeToTable(spark, inputFilePath, dataDirectoryBasePath);
-        } finally {
-            spark.stop();
-        }
+        new TableWriterKafkaDaemon(
+                        obs -> new IcebergTableWriter(obs),
+                        base -> new SparkSessionFactory().createIcebergTableSparkSession(base))
+                .run();
     }
 }

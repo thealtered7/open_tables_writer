@@ -29,18 +29,35 @@ repositories {
 val sparkVersion = "3.5.0"
 val deltaVersion = "3.1.0"
 val icebergVersion = "1.5.0"
+val kafkaVersion = "3.9.0"
+val jacksonVersion = "2.18.2"
 
 configurations.all {
     exclude(group = "org.slf4j", module = "slf4j-log4j12")
 }
 
 dependencies {
+    implementation(platform("io.micrometer:micrometer-bom:1.14.4"))
+    implementation(platform("io.micrometer:micrometer-tracing-bom:1.4.4"))
+    implementation(platform("io.opentelemetry:opentelemetry-bom:1.49.0"))
+
+    implementation("io.micrometer:micrometer-observation")
+    implementation("io.micrometer:micrometer-core")
+    implementation("io.micrometer:micrometer-tracing")
+    implementation("io.micrometer:micrometer-tracing-bridge-otel")
+    implementation("io.micrometer:micrometer-registry-otlp")
+    implementation("io.opentelemetry:opentelemetry-exporter-otlp")
+    implementation("io.opentelemetry:opentelemetry-sdk")
+
     implementation("org.apache.spark:spark-core_2.12:$sparkVersion")
     implementation("org.apache.spark:spark-sql_2.12:$sparkVersion")
     implementation("io.delta:delta-spark_2.12:$deltaVersion")
     implementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:$icebergVersion")
 
     implementation("org.slf4j:slf4j-api:2.0.17")
+    implementation("com.fasterxml.jackson.core:jackson-databind:$jacksonVersion")
+    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:$jacksonVersion")
+    implementation("org.apache.kafka:kafka-clients:$kafkaVersion")
 
     runtimeOnly("ch.qos.logback:logback-classic:1.5.18")
     runtimeOnly("net.logstash.logback:logstash-logback-encoder:8.1")
