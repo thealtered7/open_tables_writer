@@ -9,6 +9,8 @@ CONFIG_DIR := $(CURDIR)/config
 STREAMING_NETWORK ?= streaming_streaming
 DATA_DIR ?= /opt/data
 RAW_DATA_DIR ?= /opt/data/raw
+SILVER_DATA_DIR ?= $(DATA_DIR)/silver
+SOURCE_TABLE_PATH ?=
 KAFKA_CONTAINER ?= streaming-kafka
 KAFKA_TOPIC ?= cdc-file-write
 ICEBERG_KAFKA_GROUP ?= iceberg-table-writer
@@ -33,6 +35,7 @@ SPARK_JVM_ARGS := \
 .PHONY: bootstrap compile test run clean build-docker run-hello-world \
 	run-iceberg-table-writer run-delta-table-writer \
 	run-delta-table-writer-docker run-iceberg-table-writer-docker \
+	run-create-type2-dimension-docker \
 	stop-delta-table-writer-docker stop-iceberg-table-writer-docker \
 	reset-iceberg-kafka-offsets
 
@@ -110,6 +113,17 @@ run-iceberg-table-writer-docker: build-docker
 		-e MANAGEMENT_OTLP_TRACING_ENDPOINT=http://otel-collector:4318/v1/traces \
 		-e MANAGEMENT_OTLP_METRICS_EXPORT_URL=http://otel-collector:4318/v1/metrics \
 		$(IMAGE_TAG) com.thealtered7.IcebergTableWriter
+
+run-create-type2-dimension-docker: build-docker
+	@test -n "$(SOURCE_TABLE_PATH)" || (echo "Set SOURCE_TABLE_PATH, e.g. /opt/data/iceberg/geo/public/scalars"; exit 1)
+	@mkdir -p $(DATA_DIR) $(SILVER_DATA_DIR) $(RAW_DATA_DIR)
+	docker run --rm \
+		-v $(DATA_DIR):/opt/data \
+		-v $(CONFIG_DIR):/config:ro \
+		-e TYPE2_DIMENSION_PROPERTIES_PATH=/config/create-type2-dimension.properties \
+		-e HADOOP_USER_NAME=testuser \
+		-e SPARK_JVM_ARGS="$(SPARK_JVM_ARGS)" \
+		$(IMAGE_TAG) com.thealtered7.CreateType2Dimension $(SOURCE_TABLE_PATH)
 
 stop-delta-table-writer-docker:
 	docker stop delta-table-writer

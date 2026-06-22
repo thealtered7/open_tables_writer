@@ -41,4 +41,26 @@ public class SparkSessionFactory {
         spark.sparkContext().setLogLevel("WARN");
         return spark;
     }
+
+    public SparkSession createIcebergTableSparkSession(Path sourceWarehouse, Path silverWarehouse) {
+        log.info(
+                "creating iceberg table spark session with source warehouse: {} and silver warehouse: {}",
+                sourceWarehouse,
+                silverWarehouse);
+        SparkSession spark = SparkSession.builder()
+                .appName("Write to Apache Iceberg")
+                .master("local[*]")
+                .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+                .config("spark.sql.catalog.local_catalog", "org.apache.iceberg.spark.SparkCatalog")
+                .config("spark.sql.catalog.local_catalog.type", "hadoop")
+                .config("spark.sql.catalog.local_catalog.warehouse", sourceWarehouse.toString())
+                .config("spark.sql.catalog.silver_catalog", "org.apache.iceberg.spark.SparkCatalog")
+                .config("spark.sql.catalog.silver_catalog.type", "hadoop")
+                .config("spark.sql.catalog.silver_catalog.warehouse", silverWarehouse.toString())
+                .config("spark.sql.shuffle.partitions", "4")
+                .getOrCreate();
+
+        spark.sparkContext().setLogLevel("WARN");
+        return spark;
+    }
 }

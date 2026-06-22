@@ -15,7 +15,7 @@ WORKDIR /app
 
 COPY --from=build /build/build/install/open-tables-writer/lib/ /app/lib/
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh && mkdir -p /opt/data/silver /opt/data/iceberg
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["com.thealtered7.OpenTablesWriter"]
