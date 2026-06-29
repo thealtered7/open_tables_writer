@@ -76,6 +76,10 @@ public final class WriterConfigLoader {
         return requireProperty("kafka.topic");
     }
 
+    public String writeNotificationsTopic() {
+        return properties.getProperty("kafka.opentable.write.notifications", "open-table-write-notifications");
+    }
+
     public String clientId() {
         return requireProperty("kafka.client.id");
     }

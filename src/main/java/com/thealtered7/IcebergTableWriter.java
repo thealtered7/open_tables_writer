@@ -93,6 +93,11 @@ public class IcebergTableWriter implements TableWriter {
         }
     }
 
+    @Override
+    public com.thealtered7.models.TableUpdatedNotification.OpenTableFormat format() {
+        return com.thealtered7.models.TableUpdatedNotification.OpenTableFormat.ICEBERG;
+    }
+
     private String toCatalogTableName(String tableFQN) {
         String[] parts = tableFQN.split("\\.");
         return String.format("local_catalog.%s.%s.%s", parts[0], parts[1], parts[2]);

@@ -19,6 +19,8 @@ import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.spark.sql.functions.col;
 import static org.apache.spark.sql.functions.lit;
@@ -26,6 +28,7 @@ import static org.apache.spark.sql.functions.to_timestamp;
 
 public final class DebeziumPayloadFlattener {
 
+    private static final Logger log = LoggerFactory.getLogger(DebeziumPayloadFlattener.class);
     private static final Set<String> PREFIXED_STRUCTS = Set.of("before", "after", "source");
     private static final Set<String> TOP_LEVEL_FIELDS = Set.of("op", "transaction", "ts_ms", "ts_ns", "ts_us");
     private static final String ISO_TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss[.SSSSSS]'Z'";
@@ -70,11 +73,19 @@ public final class DebeziumPayloadFlattener {
     private Dataset<Row> flattenPayloadInternal(Dataset<Row> raw) {
         StructType payloadSchema = (StructType) raw.schema().apply("payload").dataType();
 
+        StructType rowDataSchema = resolveRowDataSchema(payloadSchema);
+
         List<Column> columns = new ArrayList<>();
         for (StructField field : payloadSchema.fields()) {
             String name = field.name();
             if (PREFIXED_STRUCTS.contains(name)) {
-                expandStruct(columns, name, (StructType) field.dataType());
+                if (field.dataType() instanceof StructType structType) {
+                    expandStruct(columns, name, structType);
+                } else if (("before".equals(name) || "after".equals(name)) && rowDataSchema != null) {
+                    expandNullStruct(columns, name, rowDataSchema);
+                } else {
+                    log.warn("Skipping non-struct payload field {} of type {}", name, field.dataType());
+                }
             } else if (TOP_LEVEL_FIELDS.contains(name)) {
                 columns.add(col("payload." + name).alias(name));
             }
@@ -83,10 +94,31 @@ public final class DebeziumPayloadFlattener {
         return raw.select(columns.toArray(Column[]::new));
     }
 
+    private StructType resolveRowDataSchema(StructType payloadSchema) {
+        StructType afterSchema = structFieldType(payloadSchema, "after");
+        return afterSchema != null ? afterSchema : structFieldType(payloadSchema, "before");
+    }
+
+    private StructType structFieldType(StructType payloadSchema, String name) {
+        for (StructField field : payloadSchema.fields()) {
+            if (field.name().equals(name) && field.dataType() instanceof StructType structType) {
+                return structType;
+            }
+        }
+        return null;
+    }
+
     private void expandStruct(List<Column> columns, String structName, StructType structType) {
         for (StructField nested : structType.fields()) {
             String alias = structName + "_" + nested.name();
             columns.add(col("payload." + structName + "." + nested.name()).alias(alias));
+        }
+    }
+
+    private void expandNullStruct(List<Column> columns, String structName, StructType structType) {
+        for (StructField nested : structType.fields()) {
+            String alias = structName + "_" + nested.name();
+            columns.add(lit(null).cast(nested.dataType()).alias(alias));
         }
     }
 

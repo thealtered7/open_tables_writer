@@ -20,6 +20,8 @@ public class Observability {
     public static final String DELTA_TABLE_WRITER_PREFIX = "delta_table_writer";
     public static final String ICEBERG_TABLE_WRITER_PREFIX = "iceberg_table_writer";
     public static final String DEBEZIUM_PAYLOAD_FLATTENER_PREFIX = "debezium_payload_flattener";
+    public static final String TYPE2_DIMENSION_KAFKA_PREFIX = "type2_dimension_kafka";
+    public static final String TYPE2_DIMENSION_TRANSFORMER_PREFIX = "type2_dimension_transformer";
 
     private final ObservationRegistry observationRegistry;
     private final MeterRegistry meterRegistry;

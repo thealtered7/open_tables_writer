@@ -1,5 +1,6 @@
 package com.thealtered7;
 
+import com.thealtered7.observability.Observability;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,6 +16,8 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -44,31 +47,56 @@ public class Type2DimensionTransformer {
     private static final Set<String> TYPE2_COLUMNS =
             Set.of(VALID_FROM_COLUMN, VALID_TO_COLUMN, IS_CURRENT_COLUMN, PRIMARY_KEY_COLUMN);
 
+    private final Observability observability;
+
     public Type2DimensionTransformer() {
+        this(Observability.noop());
+    }
+
+    public Type2DimensionTransformer(Observability observability) {
+        this.observability = Objects.requireNonNull(observability, "observability");
     }
 
     public void transform(SparkSession spark, TableIdentity table) {
-        log.info("transforming table: {}", table.getTableFqn());
-        Timestamp maxUpdatedAt = readMaxUpdatedAt(spark, table);
-        Dataset<Row> source = readSourceTable(spark, table, maxUpdatedAt);
+        transform(spark, new IcebergType2TableAccess(table));
+    }
+
+    public void transform(SparkSession spark, Type2TableAccess access) {
+        try {
+            observability.observeCallableVoid(
+                    Observability.TYPE2_DIMENSION_TRANSFORMER_PREFIX,
+                    "transform",
+                    Map.of("table", access.tableFqn()),
+                    () -> {
+                        transformInternal(spark, access);
+                        return "success";
+                    });
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void transformInternal(SparkSession spark, Type2TableAccess access) {
+        log.info("transforming table: {}", access.tableFqn());
+        Timestamp maxUpdatedAt = readMaxUpdatedAt(spark, access);
+        Dataset<Row> source = readSourceTable(spark, access, maxUpdatedAt);
         if (source.isEmpty()) {
-            log.info("no new source rows for {}", table.getTableFqn());
+            log.info("no new source rows for {}", access.tableFqn());
             return;
         }
 
         Dataset<Row> renamed = transformForType2(source);
-        Dataset<Row> type2Rows = buildType2Rows(spark, table, renamed);
-        mergeIntoSilver(spark, table, type2Rows);
+        Dataset<Row> type2Rows = buildType2Rows(spark, access, renamed);
+        mergeIntoSilver(spark, access, type2Rows);
     }
 
-    private Dataset<Row> buildType2Rows(SparkSession spark, TableIdentity table, Dataset<Row> incoming) {
+    private Dataset<Row> buildType2Rows(SparkSession spark, Type2TableAccess access, Dataset<Row> incoming) {
         String[] baseColumns = baseColumnNames(incoming);
         Dataset<Row> ids = incoming.select(col(ID_COLUMN)).distinct();
         Dataset<Row> combined = incoming.select(toColumns(baseColumns));
 
-        String silverCatalogTable = toSilverCatalogTableName(table);
-        if (spark.catalog().tableExists(silverCatalogTable)) {
-            Dataset<Row> currentSilver = spark.table(silverCatalogTable)
+        if (access.silverExists(spark)) {
+            Dataset<Row> currentSilver = access.readSilver(spark)
                     .filter(col(IS_CURRENT_COLUMN).equalTo(true))
                     .join(ids, ID_COLUMN);
             if (!currentSilver.isEmpty()) {
@@ -95,48 +123,26 @@ public class Type2DimensionTransformer {
                 .drop(NEXT_UPDATED_AT_COLUMN);
     }
 
-    private void mergeIntoSilver(SparkSession spark, TableIdentity table, Dataset<Row> type2Rows) {
-        String silverCatalogTable = toSilverCatalogTableName(table);
-        String sqlTableName = toSqlSilverTableName(table);
+    private void mergeIntoSilver(SparkSession spark, Type2TableAccess access, Dataset<Row> type2Rows) {
         type2Rows.createOrReplaceTempView(TYPE2_STAGING_VIEW);
 
-        if (!spark.catalog().tableExists(silverCatalogTable)) {
-            log.info("creating silver type-2 table {}", silverCatalogTable);
-            spark.sql(String.format(
-                    """
-                    CREATE TABLE %s
-                    USING iceberg
-                    AS SELECT * FROM %s
-                    """,
-                    sqlTableName,
-                    TYPE2_STAGING_VIEW));
+        if (!access.silverExists(spark)) {
+            log.info("creating silver type-2 table {}", access.tableFqn());
+            access.createSilver(spark, TYPE2_STAGING_VIEW);
             return;
         }
 
         String updateSetClause = buildMergeUpdateSetClause(type2Rows.columns());
-        log.info("merging {} rows into {}", type2Rows.count(), silverCatalogTable);
-        spark.sql(String.format(
-                """
-                MERGE INTO %s AS t
-                USING %s AS s
-                ON t.%s = s.%s
-                WHEN MATCHED THEN UPDATE SET %s
-                WHEN NOT MATCHED THEN INSERT *
-                """,
-                sqlTableName,
-                TYPE2_STAGING_VIEW,
-                PRIMARY_KEY_COLUMN,
-                PRIMARY_KEY_COLUMN,
-                updateSetClause));
+        log.info("merging {} rows into {}", type2Rows.count(), access.tableFqn());
+        access.mergeSilver(spark, TYPE2_STAGING_VIEW, PRIMARY_KEY_COLUMN, updateSetClause);
     }
 
-    private Timestamp readMaxUpdatedAt(SparkSession spark, TableIdentity table) {
-        String catalogTable = toSilverCatalogTableName(table);
-        if (!spark.catalog().tableExists(catalogTable)) {
+    private Timestamp readMaxUpdatedAt(SparkSession spark, Type2TableAccess access) {
+        if (!access.silverExists(spark)) {
             return null;
         }
 
-        Dataset<Row> silver = spark.table(catalogTable);
+        Dataset<Row> silver = access.readSilver(spark);
         if (silver.isEmpty()) {
             return null;
         }
@@ -150,8 +156,8 @@ public class Type2DimensionTransformer {
         return maxUpdatedAt;
     }
 
-    private Dataset<Row> readSourceTable(SparkSession spark, TableIdentity table, Timestamp maxUpdatedAt) {
-        Dataset<Row> source = spark.table(table.getCatalogTableName());
+    private Dataset<Row> readSourceTable(SparkSession spark, Type2TableAccess access, Timestamp maxUpdatedAt) {
+        Dataset<Row> source = access.readBronze(spark);
         if (maxUpdatedAt == null) {
             return source;
         }
@@ -189,14 +195,5 @@ public class Type2DimensionTransformer {
                 .filter(column -> !PRIMARY_KEY_COLUMN.equals(column))
                 .map(column -> String.format("t.`%s` = s.`%s`", column, column))
                 .collect(Collectors.joining(", "));
-    }
-
-    private static String toSilverCatalogTableName(TableIdentity table) {
-        return table.getCatalogTableName().replace("local_catalog.", "silver_catalog.");
-    }
-
-    private static String toSqlSilverTableName(TableIdentity table) {
-        String[] parts = table.getTableFqn().split("\\.");
-        return String.format("silver_catalog.`%s`.`%s`.`%s`", parts[0], parts[1], parts[2]);
     }
 }

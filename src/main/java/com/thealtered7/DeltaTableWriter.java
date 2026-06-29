@@ -83,6 +83,11 @@ public class DeltaTableWriter implements TableWriter {
         }
     }
 
+    @Override
+    public com.thealtered7.models.TableUpdatedNotification.OpenTableFormat format() {
+        return com.thealtered7.models.TableUpdatedNotification.OpenTableFormat.DELTA;
+    }
+
     public static void main(String[] args) {
         new TableWriterKafkaDaemon(
                         obs -> new DeltaTableWriter(obs),

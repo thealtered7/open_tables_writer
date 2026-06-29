@@ -42,6 +42,28 @@ public class SparkSessionFactory {
         return spark;
     }
 
+    public SparkSession createType2SparkSession(Path silverWarehouse) {
+        log.info("creating type-2 spark session with silver warehouse: {}", silverWarehouse);
+        SparkSession spark = SparkSession.builder()
+                .appName("Create Type-2 Dimension")
+                .master("local[*]")
+                .config(
+                        "spark.sql.extensions",
+                        "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,"
+                                + "io.delta.sql.DeltaSparkSessionExtension")
+                .config("spark.sql.catalog.local_catalog", "org.apache.iceberg.spark.SparkCatalog")
+                .config("spark.sql.catalog.local_catalog.type", "hadoop")
+                .config("spark.sql.catalog.silver_catalog", "org.apache.iceberg.spark.SparkCatalog")
+                .config("spark.sql.catalog.silver_catalog.type", "hadoop")
+                .config("spark.sql.catalog.silver_catalog.warehouse", silverWarehouse.toString())
+                .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+                .config("spark.sql.shuffle.partitions", "4")
+                .getOrCreate();
+
+        spark.sparkContext().setLogLevel("WARN");
+        return spark;
+    }
+
     public SparkSession createIcebergTableSparkSession(Path sourceWarehouse, Path silverWarehouse) {
         log.info(
                 "creating iceberg table spark session with source warehouse: {} and silver warehouse: {}",

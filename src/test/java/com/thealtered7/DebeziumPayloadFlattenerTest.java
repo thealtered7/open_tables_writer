@@ -62,6 +62,50 @@ class DebeziumPayloadFlattenerTest {
     }
 
     @Test
+    void flattenPayloadHandlesInsertWithNullBefore(@TempDir Path tempDir) throws Exception {
+        String jsonLine = """
+                {"schema":{"type":"struct","fields":[]},"payload":{"before":null,"after":{"id":2,"name":"scalar","value":2.04,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z"},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194444244,"snapshot":"false","db":"geo","sequence":"[\\"32589016\\",\\"32591512\\"]","ts_us":1780194444244620,"ts_ns":1780194444244620000,"schema":"public","table":"scalars","txId":22179,"lsn":32591512,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"c","ts_ms":1780194444583,"ts_us":1780194444583639,"ts_ns":1780194444583639448}}
+                """;
+        Path inputFile = tempDir.resolve("geo.public.scalars-2026-05-31_02-51-21.jsonl");
+        Files.writeString(inputFile, jsonLine);
+        DebeziumPayloadFlattener flattener = new DebeziumPayloadFlattener();
+        Dataset<Row> raw = flattener.loadJsonLines(spark, inputFile);
+        Dataset<Row> flat = flattener.flattenPayload(raw);
+
+        List<String> columnNames = Arrays.asList(flat.columns());
+        assertTrue(columnNames.contains("after_id"));
+        assertTrue(columnNames.contains("before_id"));
+        assertTrue(columnNames.contains("source_db"));
+        assertTrue(columnNames.contains("op"));
+
+        Row row = flat.first();
+        assertTrue(row.isNullAt(flat.schema().fieldIndex("before_id")));
+        assertEquals(2L, (long) row.getAs("after_id"));
+    }
+
+    @Test
+    void flattenPayloadHandlesDeleteWithNullAfter(@TempDir Path tempDir) throws Exception {
+        String jsonLine = """
+                {"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":3,"name":"scalar","value":3.06,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T01:55:32.887469Z"},"after":null,"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194444244,"snapshot":"false","db":"geo","sequence":"[\\"32589016\\",\\"32591512\\"]","ts_us":1780194444244620,"ts_ns":1780194444244620000,"schema":"public","table":"scalars","txId":22179,"lsn":32591512,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"d","ts_ms":1780194444583,"ts_us":1780194444583639,"ts_ns":1780194444583639448}}
+                """;
+        Path inputFile = tempDir.resolve("geo.public.scalars-2026-05-31_02-52-21.jsonl");
+        Files.writeString(inputFile, jsonLine);
+        DebeziumPayloadFlattener flattener = new DebeziumPayloadFlattener();
+        Dataset<Row> raw = flattener.loadJsonLines(spark, inputFile);
+        Dataset<Row> flat = flattener.flattenPayload(raw);
+
+        List<String> columnNames = Arrays.asList(flat.columns());
+        assertTrue(columnNames.contains("before_id"));
+        assertTrue(columnNames.contains("after_id"));
+        assertTrue(columnNames.contains("source_db"));
+        assertTrue(columnNames.contains("op"));
+
+        Row row = flat.first();
+        assertTrue(row.isNullAt(flat.schema().fieldIndex("after_id")));
+        assertEquals(3L, (long) row.getAs("before_id"));
+    }
+
+    @Test
     void getOutputTablePathBuildsTablePath() {
         DebeziumPayloadFlattener flattener = new DebeziumPayloadFlattener();
         Path base = Path.of("/opt/data/iceberg");

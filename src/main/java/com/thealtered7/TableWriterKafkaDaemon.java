@@ -3,6 +3,7 @@ package com.thealtered7;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.thealtered7.models.FileFlushNotification;
 import com.thealtered7.models.FileFlushNotificationJson;
+import com.thealtered7.models.TableUpdatedNotification;
 import com.thealtered7.observability.Observability;
 import com.thealtered7.observability.ObservabilityFactory;
 import java.nio.file.Path;
@@ -51,6 +52,8 @@ public class TableWriterKafkaDaemon {
         TableWriter writer = writerFactory.apply(observability);
         SparkSession spark = sparkSessionFactory.apply(dataDirectoryBasePath);
         KafkaConsumer<String, String> consumer = createConsumer(config);
+        TableUpdatedNotificationPublisher publisher = new TableUpdatedNotificationPublisher(
+                config.bootstrapServers(), config.clientId(), config.writeNotificationsTopic());
         AtomicBoolean running = new AtomicBoolean(true);
 
         Thread shutdownHook = new Thread(() -> {
@@ -72,7 +75,15 @@ public class TableWriterKafkaDaemon {
                     ConsumerRecords<String, String> records = consumer.poll(POLL_TIMEOUT);
                     observability.lowCardinalityTag("record_count", String.valueOf(records.count()));
                     for (ConsumerRecord<String, String> record : records) {
-                        processRecord(observability, config, writer, spark, dataDirectoryBasePath, consumer, record);
+                        processRecord(
+                                observability,
+                                config,
+                                writer,
+                                spark,
+                                dataDirectoryBasePath,
+                                consumer,
+                                publisher,
+                                record);
                     }
                     return records.isEmpty() ? "empty" : "success";
                 });
@@ -85,6 +96,7 @@ public class TableWriterKafkaDaemon {
         } finally {
             Runtime.getRuntime().removeShutdownHook(shutdownHook);
             consumer.close();
+            publisher.close();
             spark.stop();
             observabilityFactory.shutdown();
             log.info("Kafka consumer and Spark session stopped");
@@ -110,6 +122,7 @@ public class TableWriterKafkaDaemon {
             SparkSession spark,
             Path dataDirectoryBasePath,
             KafkaConsumer<String, String> consumer,
+            TableUpdatedNotificationPublisher publisher,
             ConsumerRecord<String, String> record) {
         try {
             observability.observeCallableVoid(
@@ -143,6 +156,7 @@ public class TableWriterKafkaDaemon {
                         }
 
                         writer.writeToTable(spark, inputFilePath, dataDirectoryBasePath);
+                        publishTableUpdated(publisher, writer, notification, inputFilePath, dataDirectoryBasePath);
                         commitOffset(consumer, record);
                         return "success";
                     });
@@ -154,6 +168,23 @@ public class TableWriterKafkaDaemon {
                     record.offset(),
                     e);
         }
+    }
+
+    private static void publishTableUpdated(
+            TableUpdatedNotificationPublisher publisher,
+            TableWriter writer,
+            FileFlushNotification source,
+            Path inputFilePath,
+            Path dataDirectoryBasePath) {
+        String tableFqn = CdcInputFileNames.tableFqnFromFileName(inputFilePath.getFileName().toString());
+        Path tablePath = new DebeziumPayloadFlattener().getOutputTablePath(tableFqn, dataDirectoryBasePath);
+        TableUpdatedNotification notification = new TableUpdatedNotification(
+                tableFqn,
+                tablePath.toAbsolutePath().toString(),
+                writer.format(),
+                source.runGuid(),
+                source.writtenAt());
+        publisher.publish(notification);
     }
 
     private static void commitOffset(KafkaConsumer<String, String> consumer, ConsumerRecord<String, String> record) {
