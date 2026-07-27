@@ -1,5 +1,6 @@
 package com.thealtered7;
 
+import com.thealtered7.models.TableUpdatedNotification.OpenTableFormat;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
@@ -12,6 +13,11 @@ interface Type2TableAccess {
 
     String tableFqn();
 
+    OpenTableFormat format();
+
+    /** Absolute path of the warehouse where silver Type-2 tables for this access are written. */
+    String warehousePath();
+
     Dataset<Row> readBronze(SparkSession spark);
 
     boolean silverExists(SparkSession spark);
@@ -21,4 +27,6 @@ interface Type2TableAccess {
     void createSilver(SparkSession spark, String stagingView);
 
     void mergeSilver(SparkSession spark, String stagingView, String onColumn, String updateSetClause);
+
+    void addIsDeletedColumn(SparkSession spark, String columnName);
 }

@@ -4,12 +4,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
 
+import com.thealtered7.datapipelines.BronzeTableWriteRegistration;
+import com.thealtered7.datapipelines.KafkaWriteContext;
+import com.thealtered7.datapipelines.RecordingDatapipelinesClient;
+import com.thealtered7.observability.Observability;
 import org.apache.spark.sql.SparkSession;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrowsExactly;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,15 +50,15 @@ class IcebergTableWriterTest {
         IcebergTableWriter writer = new IcebergTableWriter();
         Path inputFile = Path.of("geo.public.scalars-2026-05-31_02-51-21.jsonl");
 
-        assertEquals("geo.public.scalars", invokeGetTableFqn(writer, inputFile));
+        assertEquals("geo.public_bronze.scalars", invokeGetTableFqn(writer, inputFile));
     }
 
     @Test
     void getTableFqnStripsJsonlSuffixWhenPatternDoesNotMatch() {
         IcebergTableWriter writer = new IcebergTableWriter();
-        Path inputFile = Path.of("custom.table.jsonl");
+        Path inputFile = Path.of("custom.table.name.jsonl");
 
-        assertEquals("custom.table", invokeGetTableFqn(writer, inputFile));
+        assertEquals("custom.table_bronze.name", invokeGetTableFqn(writer, inputFile));
     }
 
     @Test
@@ -65,7 +70,7 @@ class IcebergTableWriterTest {
         IcebergTableWriter writer = new IcebergTableWriter();
         writer.writeToTable(spark, inputFile, dataDirectory);
 
-        String catalogTable = "local_catalog.geo.public.scalars";
+        String catalogTable = "local_catalog.geo.public_bronze.scalars";
 
         Dataset<Row> created = spark.table(catalogTable);
         assertEquals(1L, created.count());
@@ -96,6 +101,51 @@ class IcebergTableWriterTest {
 
         IcebergTableWriter writer = new IcebergTableWriter();
         writer.writeToTable(spark, inputFile, dataDirectory);
+    }
+
+    @Test
+    void writeToTableRegistersBronzeWriteWithKafkaMetadata(@TempDir Path tempDir) throws Exception {
+        Path inputFile = tempDir.resolve("geo.public.register_check-2026-05-31_02-51-21.jsonl");
+        Files.writeString(inputFile, SAMPLE_JSON_LINE);
+        Path dataDirectory = tempDir.resolve("warehouse");
+
+        RecordingDatapipelinesClient client = new RecordingDatapipelinesClient();
+        KafkaWriteContext kafka = new KafkaWriteContext("cdc-file-write", 1, 99L);
+        SourceTableIdentity source =
+                new SourceTableIdentity("test-instance", "geo", "public", "register_check");
+        IcebergTableWriter writer = new IcebergTableWriter(Observability.noop(), client);
+        writer.writeToTable(spark, inputFile, dataDirectory, kafka, source);
+
+        assertEquals(1, client.bronzeWrites().size());
+        assertEquals(0, client.type2Writes().size());
+        BronzeTableWriteRegistration registration = client.bronzeWrites().get(0);
+        assertEquals("test-instance", registration.sourceInstanceName());
+        assertEquals("geo", registration.sourceDatabaseName());
+        assertEquals("public", registration.sourceSchemaName());
+        assertEquals("register_check", registration.sourceTableName());
+        assertEquals("geo", registration.databaseName());
+        assertEquals("public_bronze", registration.namespaceName());
+        assertEquals("register_check", registration.tableName());
+        assertEquals(1L, registration.rowCount());
+        assertEquals(dataDirectory.toAbsolutePath().toString(), registration.warehousePath());
+        assertEquals(kafka, registration.kafka());
+    }
+
+    @Test
+    void writeToTableContinuesWhenDatapipelinesRegistrationFails(@TempDir Path tempDir) throws Exception {
+        Path inputFile = tempDir.resolve("geo.public.register_fail-2026-05-31_02-51-21.jsonl");
+        Files.writeString(inputFile, SAMPLE_JSON_LINE);
+        Path dataDirectory = tempDir.resolve("warehouse-fail");
+
+        RecordingDatapipelinesClient client = new RecordingDatapipelinesClient();
+        client.failPosts();
+        SourceTableIdentity source =
+                new SourceTableIdentity("test-instance", "geo", "public", "register_fail");
+        IcebergTableWriter writer = new IcebergTableWriter(Observability.noop(), client);
+
+        assertDoesNotThrow(() -> writer.writeToTable(spark, inputFile, dataDirectory, null, source));
+        assertTrue(spark.catalog().tableExists("local_catalog.geo.public_bronze.register_fail"));
+        assertEquals(0, client.bronzeWrites().size());
     }
 
     @Test

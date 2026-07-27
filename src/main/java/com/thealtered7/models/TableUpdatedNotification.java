@@ -8,7 +8,14 @@ public record TableUpdatedNotification(
         @JsonProperty("tablePath") String tablePath,
         @JsonProperty("format") OpenTableFormat format,
         @JsonProperty("runGuid") String runGuid,
-        @JsonProperty("writtenAt") Instant writtenAt) {
+        @JsonProperty("writtenAt") Instant writtenAt,
+        @JsonProperty("sourceCatalogName") String sourceCatalogName,
+        @JsonProperty("sourceDatabaseName") String sourceDatabaseName,
+        @JsonProperty("sourceNamespaceName") String sourceNamespaceName,
+        @JsonProperty("sourceTableName") String sourceTableName,
+        @JsonProperty("databaseName") String databaseName,
+        @JsonProperty("namespaceName") String namespaceName,
+        @JsonProperty("tableName") String tableName) {
 
     public enum OpenTableFormat {
         ICEBERG,

@@ -1,6 +1,9 @@
 package com.thealtered7;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.thealtered7.datapipelines.DatapipelinesClient;
+import com.thealtered7.datapipelines.DatapipelinesHttpClient;
+import com.thealtered7.datapipelines.KafkaWriteContext;
 import com.thealtered7.models.FileFlushNotification;
 import com.thealtered7.models.FileFlushNotificationJson;
 import com.thealtered7.models.TableUpdatedNotification;
@@ -12,7 +15,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Function;
+import java.util.function.BiFunction;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -30,12 +33,12 @@ public class TableWriterKafkaDaemon {
     private static final ObjectMapper OBJECT_MAPPER = FileFlushNotificationJson.MAPPER;
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(1000);
 
-    private final Function<Observability, ? extends TableWriter> writerFactory;
-    private final Function<Path, SparkSession> sparkSessionFactory;
+    private final BiFunction<Observability, DatapipelinesClient, ? extends TableWriter> writerFactory;
+    private final java.util.function.Function<Path, SparkSession> sparkSessionFactory;
 
     public TableWriterKafkaDaemon(
-            Function<Observability, ? extends TableWriter> writerFactory,
-            Function<Path, SparkSession> sparkSessionFactory) {
+            BiFunction<Observability, DatapipelinesClient, ? extends TableWriter> writerFactory,
+            java.util.function.Function<Path, SparkSession> sparkSessionFactory) {
         this.writerFactory = Objects.requireNonNull(writerFactory, "writerFactory");
         this.sparkSessionFactory = Objects.requireNonNull(sparkSessionFactory, "sparkSessionFactory");
     }
@@ -49,7 +52,12 @@ public class TableWriterKafkaDaemon {
         Observability observability = observabilityFactory.observability();
         Runtime.getRuntime().addShutdownHook(new Thread(observabilityFactory::shutdown, "observability-shutdown"));
 
-        TableWriter writer = writerFactory.apply(observability);
+        DatapipelinesClient datapipelinesClient = DatapipelinesHttpClient.create(
+                config.datapipelinesBaseUrl(),
+                config.datapipelinesCatalogName(),
+                config.datapipelinesJwtEnabled(),
+                observability);
+        TableWriter writer = writerFactory.apply(observability, datapipelinesClient);
         SparkSession spark = sparkSessionFactory.apply(dataDirectoryBasePath);
         KafkaConsumer<String, String> consumer = createConsumer(config);
         TableUpdatedNotificationPublisher publisher = new TableUpdatedNotificationPublisher(
@@ -155,8 +163,21 @@ public class TableWriterKafkaDaemon {
                             return "file_not_found";
                         }
 
-                        writer.writeToTable(spark, inputFilePath, dataDirectoryBasePath);
-                        publishTableUpdated(publisher, writer, notification, inputFilePath, dataDirectoryBasePath);
+                        SourceTableIdentity source = SourceTableIdentity.fromFlush(notification);
+                        writer.writeToTable(
+                                spark,
+                                inputFilePath,
+                                dataDirectoryBasePath,
+                                KafkaWriteContext.fromRecord(record),
+                                source);
+                        publishTableUpdated(
+                                publisher,
+                                writer,
+                                config,
+                                notification,
+                                source,
+                                inputFilePath,
+                                dataDirectoryBasePath);
                         commitOffset(consumer, record);
                         return "success";
                     });
@@ -173,17 +194,31 @@ public class TableWriterKafkaDaemon {
     private static void publishTableUpdated(
             TableUpdatedNotificationPublisher publisher,
             TableWriter writer,
+            WriterConfigLoader config,
             FileFlushNotification source,
+            SourceTableIdentity sourceIdentity,
             Path inputFilePath,
             Path dataDirectoryBasePath) {
-        String tableFqn = CdcInputFileNames.tableFqnFromFileName(inputFilePath.getFileName().toString());
+        String tableFqn = OpenTableNamespaces.toBronzeTableFqn(
+                CdcInputFileNames.tableFqnFromFileName(inputFilePath.getFileName().toString()));
         Path tablePath = new DebeziumPayloadFlattener().getOutputTablePath(tableFqn, dataDirectoryBasePath);
+        String databaseName = sourceIdentity != null ? sourceIdentity.databaseName() : null;
+        String bronzeNamespace =
+                sourceIdentity != null ? OpenTableNamespaces.bronze(sourceIdentity.schemaName()) : null;
+        String tableName = sourceIdentity != null ? sourceIdentity.tableName() : null;
         TableUpdatedNotification notification = new TableUpdatedNotification(
                 tableFqn,
                 tablePath.toAbsolutePath().toString(),
                 writer.format(),
                 source.runGuid(),
-                source.writtenAt());
+                source.writtenAt(),
+                config.datapipelinesCatalogName(),
+                databaseName,
+                bronzeNamespace,
+                tableName,
+                databaseName,
+                bronzeNamespace,
+                tableName);
         publisher.publish(notification);
     }
 

@@ -16,6 +16,12 @@ DELTA_KAFKA_GROUP ?= delta-table-writer
 ICEBERG_KAFKA_GROUP ?= iceberg-table-writer
 NOTIFICATIONS_KAFKA_TOPIC ?= open-table-write-notifications
 TYPE2_KAFKA_GROUP ?= create-type2-dimension
+# Kafka topic administration (purge-kafka-topics)
+KAFKA_BOOTSTRAP ?= kafka:9092
+KAFKA_CLI_IMAGE ?= apache/kafka:latest
+KAFKA_TOPICS ?= $(KAFKA_TOPIC) $(NOTIFICATIONS_KAFKA_TOPIC)
+KAFKA_TOPIC_PARTITIONS ?= 1
+KAFKA_TOPIC_REPLICATION ?= 1
 # earliest = replay from start; latest = skip to end
 RESET_TO ?= earliest
 # Records to rewind (shift-kafka-offsets-back)
@@ -44,7 +50,7 @@ SPARK_JVM_ARGS := \
 	stop-create-type2-dimension-docker \
 	reset-delta-kafka-offsets reset-iceberg-kafka-offsets \
 	reset-cdc-file-write-kafka-offsets reset-type2-notifications-kafka-offsets \
-	shift-kafka-offsets-back
+	shift-kafka-offsets-back purge-kafka-topics
 
 # One-time: create gradlew + gradle/wrapper/* (requires `gradle` on PATH)
 bootstrap:
@@ -201,3 +207,37 @@ reset-type2-notifications-kafka-offsets:
 		--topic $(NOTIFICATIONS_KAFKA_TOPIC) \
 		--reset-offsets --to-$(RESET_TO) \
 		--execute
+
+# Delete and recreate (empty) every Kafka topic used by this repo.
+# Runs the Kafka CLI in a one-shot container attached to the streaming Docker
+# network and connects to the broker at $(KAFKA_BOOTSTRAP).
+# Requires the streaming Kafka broker to be running on $(STREAMING_NETWORK).
+# Usage: make purge-kafka-topics
+#        make purge-kafka-topics KAFKA_TOPICS="cdc-file-write"
+purge-kafka-topics:
+	-docker stop delta-table-writer iceberg-table-writer create-type2-dimension 2>/dev/null
+	@for topic in $(KAFKA_TOPICS); do \
+		echo "Deleting topic $$topic ..."; \
+		docker run --rm --network $(STREAMING_NETWORK) $(KAFKA_CLI_IMAGE) \
+			/opt/kafka/bin/kafka-topics.sh \
+			--bootstrap-server $(KAFKA_BOOTSTRAP) \
+			--delete --topic $$topic || true; \
+		echo "Waiting for topic $$topic to be removed ..."; \
+		for i in $$(seq 1 30); do \
+			if docker run --rm --network $(STREAMING_NETWORK) $(KAFKA_CLI_IMAGE) \
+				/opt/kafka/bin/kafka-topics.sh \
+				--bootstrap-server $(KAFKA_BOOTSTRAP) \
+				--list 2>/dev/null | grep -qx "$$topic"; then \
+				sleep 1; \
+			else \
+				break; \
+			fi; \
+		done; \
+		echo "Recreating topic $$topic ..."; \
+		docker run --rm --network $(STREAMING_NETWORK) $(KAFKA_CLI_IMAGE) \
+			/opt/kafka/bin/kafka-topics.sh \
+			--bootstrap-server $(KAFKA_BOOTSTRAP) \
+			--create --topic $$topic \
+			--partitions $(KAFKA_TOPIC_PARTITIONS) \
+			--replication-factor $(KAFKA_TOPIC_REPLICATION); \
+	done

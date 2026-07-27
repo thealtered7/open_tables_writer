@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WriterConfigLoaderTest {
 
@@ -93,5 +95,53 @@ class WriterConfigLoaderTest {
 
         assertEquals(Duration.ofSeconds(3), config.inputFileWaitMax());
         assertEquals(Duration.ofMillis(100), config.inputFileWaitPollInterval());
+    }
+
+    @Test
+    void usesDefaultsForDatapipelinesProperties(@TempDir Path tempDir) throws IOException {
+        Path common = tempDir.resolve("common.properties");
+        Path writer = tempDir.resolve("writer.properties");
+        Files.writeString(common, "kafka.bootstrap.servers=kafka:9092\nkafka.topic=cdc-file-write\n");
+        Files.writeString(
+                writer,
+                """
+                kafka.client.id=iceberg-table-writer
+                kafka.group.id=iceberg-table-writer
+                data.directory.base.path=/opt/data/icebergtable
+                """);
+
+        WriterConfigLoader config = WriterConfigLoader.loadFromPaths(common, writer);
+
+        assertEquals("", config.datapipelinesBaseUrl());
+        assertEquals("lakehouse", config.datapipelinesCatalogName());
+        assertFalse(config.datapipelinesJwtEnabled());
+    }
+
+    @Test
+    void readsDatapipelinesProperties(@TempDir Path tempDir) throws IOException {
+        Path common = tempDir.resolve("common.properties");
+        Path writer = tempDir.resolve("writer.properties");
+        Files.writeString(
+                common,
+                """
+                kafka.bootstrap.servers=kafka:9092
+                kafka.topic=cdc-file-write
+                datapipelines.http.base-url=http://datapipelines-app:8080
+                datapipelines.catalog.name=bronze
+                datapipelines.http.jwt.enabled=true
+                """);
+        Files.writeString(
+                writer,
+                """
+                kafka.client.id=iceberg-table-writer
+                kafka.group.id=iceberg-table-writer
+                data.directory.base.path=/opt/data/icebergtable
+                """);
+
+        WriterConfigLoader config = WriterConfigLoader.loadFromPaths(common, writer);
+
+        assertEquals("http://datapipelines-app:8080", config.datapipelinesBaseUrl());
+        assertEquals("bronze", config.datapipelinesCatalogName());
+        assertTrue(config.datapipelinesJwtEnabled());
     }
 }

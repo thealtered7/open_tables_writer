@@ -22,6 +22,7 @@ public class Observability {
     public static final String DEBEZIUM_PAYLOAD_FLATTENER_PREFIX = "debezium_payload_flattener";
     public static final String TYPE2_DIMENSION_KAFKA_PREFIX = "type2_dimension_kafka";
     public static final String TYPE2_DIMENSION_TRANSFORMER_PREFIX = "type2_dimension_transformer";
+    public static final String DATAPIPELINES_CLIENT_PREFIX = "datapipelines_client";
 
     private final ObservationRegistry observationRegistry;
     private final MeterRegistry meterRegistry;

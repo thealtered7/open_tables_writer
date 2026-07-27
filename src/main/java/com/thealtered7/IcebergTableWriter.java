@@ -1,5 +1,9 @@
 package com.thealtered7;
 
+import com.thealtered7.datapipelines.BronzeTableWriteRegistration;
+import com.thealtered7.datapipelines.DatapipelinesClient;
+import com.thealtered7.datapipelines.KafkaWriteContext;
+import com.thealtered7.datapipelines.NoopDatapipelinesClient;
 import com.thealtered7.observability.Observability;
 import java.nio.file.Path;
 import java.util.Date;
@@ -18,21 +22,33 @@ public class IcebergTableWriter implements TableWriter {
     private static final String WAREHOUSE_CONFIG = "spark.sql.catalog.local_catalog.warehouse";
 
     private final Observability observability;
+    private final DatapipelinesClient datapipelinesClient;
 
     public IcebergTableWriter() {
         this(Observability.noop());
     }
 
     public IcebergTableWriter(Observability observability) {
+        this(observability, new NoopDatapipelinesClient());
+    }
+
+    public IcebergTableWriter(Observability observability, DatapipelinesClient datapipelinesClient) {
         this.observability = Objects.requireNonNull(observability, "observability");
+        this.datapipelinesClient = Objects.requireNonNull(datapipelinesClient, "datapipelinesClient");
     }
 
     private String getTableFqn(Path inputFilePath) {
-        return CdcInputFileNames.tableFqnFromFileName(inputFilePath.getFileName().toString());
+        return OpenTableNamespaces.toBronzeTableFqn(
+                CdcInputFileNames.tableFqnFromFileName(inputFilePath.getFileName().toString()));
     }
 
     @Override
-    public void writeToTable(SparkSession spark, Path inputFilePath, Path dataDirectoryBasePath) {
+    public void writeToTable(
+            SparkSession spark,
+            Path inputFilePath,
+            Path dataDirectoryBasePath,
+            KafkaWriteContext kafka,
+            SourceTableIdentity source) {
         String tableFQN = this.getTableFqn(inputFilePath);
         try {
             observability.observeCallableVoid(
@@ -40,7 +56,8 @@ public class IcebergTableWriter implements TableWriter {
                     "write_to_table",
                     Map.of("table", tableFQN, "input_file", inputFilePath.toString()),
                     () -> {
-                        writeToTableInternal(spark, inputFilePath, dataDirectoryBasePath, tableFQN);
+                        writeToTableInternal(
+                                spark, inputFilePath, dataDirectoryBasePath, tableFQN, kafka, source);
                         return "success";
                     });
         } catch (Exception e) {
@@ -49,7 +66,12 @@ public class IcebergTableWriter implements TableWriter {
     }
 
     private void writeToTableInternal(
-            SparkSession spark, Path inputFilePath, Path dataDirectoryBasePath, String tableFQN) {
+            SparkSession spark,
+            Path inputFilePath,
+            Path dataDirectoryBasePath,
+            String tableFQN,
+            KafkaWriteContext kafka,
+            SourceTableIdentity source) {
         log.info("writing to table: {}", inputFilePath.getFileName());
 
         spark.conf().set(WAREHOUSE_CONFIG, dataDirectoryBasePath.toAbsolutePath().toString());
@@ -69,6 +91,7 @@ public class IcebergTableWriter implements TableWriter {
         log.info("catalog table: {}", catalogTable);
 
         partitioned.createOrReplaceTempView(INCOMING_VIEW);
+        long rowCount = partitioned.count();
 
         if (!spark.catalog().tableExists(catalogTable)) {
             log.info("creating iceberg table {}", catalogTable);
@@ -91,6 +114,35 @@ public class IcebergTableWriter implements TableWriter {
                     toSqlTableName(tableFQN),
                     INCOMING_VIEW));
         }
+
+        registerBronzeWrite(tableFQN, rowCount, dataDirectoryBasePath, kafka, source);
+    }
+
+    private void registerBronzeWrite(
+            String tableFQN,
+            long rowCount,
+            Path dataDirectoryBasePath,
+            KafkaWriteContext kafka,
+            SourceTableIdentity source) {
+        if (source == null || !source.isComplete()) {
+            log.warn("Skipping datapipelines registration; missing source identity for {}", tableFQN);
+            return;
+        }
+        try {
+            datapipelinesClient.postBronzeTableWrite(new BronzeTableWriteRegistration(
+                    source.instanceName(),
+                    source.databaseName(),
+                    source.schemaName(),
+                    source.tableName(),
+                    source.databaseName(),
+                    OpenTableNamespaces.bronze(source.schemaName()),
+                    source.tableName(),
+                    rowCount,
+                    dataDirectoryBasePath.toAbsolutePath().toString(),
+                    kafka));
+        } catch (RuntimeException e) {
+            log.error("Failed to register bronze iceberg table write for {}", tableFQN, e);
+        }
     }
 
     @Override
@@ -110,7 +162,7 @@ public class IcebergTableWriter implements TableWriter {
 
     public static void main(String[] args) {
         new TableWriterKafkaDaemon(
-                        obs -> new IcebergTableWriter(obs),
+                        (obs, client) -> new IcebergTableWriter(obs, client),
                         base -> new SparkSessionFactory().createIcebergTableSparkSession(base))
                 .run();
     }

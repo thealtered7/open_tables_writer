@@ -7,4 +7,8 @@ public record FileFlushNotification(
         @JsonProperty("filePath") String filePath,
         @JsonProperty("tableName") String tableName,
         @JsonProperty("runGuid") String runGuid,
-        @JsonProperty("writtenAt") Instant writtenAt) {}
+        @JsonProperty("writtenAt") Instant writtenAt,
+        @JsonProperty("sourceInstanceName") String sourceInstanceName,
+        @JsonProperty("sourceDatabaseName") String sourceDatabaseName,
+        @JsonProperty("sourceSchemaName") String sourceSchemaName,
+        @JsonProperty("sourceTableName") String sourceTableName) {}

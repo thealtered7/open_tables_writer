@@ -70,6 +70,18 @@ public final class Type2DimensionConfigLoader {
         return Path.of(properties.getProperty("silver.warehouse.path", DEFAULT_SILVER_WAREHOUSE));
     }
 
+    public String datapipelinesBaseUrl() {
+        return properties.getProperty("datapipelines.http.base-url", "");
+    }
+
+    public String datapipelinesCatalogName() {
+        return properties.getProperty("datapipelines.catalog.name", "lakehouse");
+    }
+
+    public boolean datapipelinesJwtEnabled() {
+        return Boolean.parseBoolean(properties.getProperty("datapipelines.http.jwt.enabled", "false"));
+    }
+
     private String requireProperty(String key) {
         String value = properties.getProperty(key);
         if (value == null || value.isBlank()) {

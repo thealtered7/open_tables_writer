@@ -1,6 +1,9 @@
 package com.thealtered7;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.thealtered7.datapipelines.DatapipelinesClient;
+import com.thealtered7.datapipelines.DatapipelinesHttpClient;
+import com.thealtered7.datapipelines.KafkaWriteContext;
 import com.thealtered7.models.TableUpdatedNotification;
 import com.thealtered7.models.TableUpdatedNotificationJson;
 import com.thealtered7.observability.Observability;
@@ -38,7 +41,13 @@ public class Type2DimensionKafkaDaemon {
                 .addShutdownHook(new Thread(observabilityFactory::shutdown, "type2-observability-shutdown"));
 
         SparkSession spark = new SparkSessionFactory().createType2SparkSession(silverWarehouse);
-        Type2DimensionTransformer transformer = new Type2DimensionTransformer(observability);
+        DatapipelinesClient datapipelinesClient = DatapipelinesHttpClient.create(
+                config.datapipelinesBaseUrl(),
+                config.datapipelinesCatalogName(),
+                config.datapipelinesJwtEnabled(),
+                observability);
+        Type2DimensionTransformer transformer =
+                new Type2DimensionTransformer(observability, datapipelinesClient);
         KafkaConsumer<String, String> consumer = createConsumer(config);
         java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
 
@@ -119,7 +128,11 @@ public class Type2DimensionKafkaDaemon {
                                 notification.runGuid());
 
                         Type2TableAccess access = tableAccessFor(notification, silverWarehouse, spark);
-                        transformer.transform(spark, access);
+                        transformer.transform(
+                                spark,
+                                access,
+                                KafkaWriteContext.fromRecord(record),
+                                Type2WriteIdentity.fromNotification(notification));
                         commitOffset(consumer, record);
                         return "success";
                     });
@@ -136,14 +149,9 @@ public class Type2DimensionKafkaDaemon {
     private static Type2TableAccess tableAccessFor(
             TableUpdatedNotification notification, Path silverWarehouse, SparkSession spark) {
         Path tablePath = Path.of(notification.tablePath());
-        return switch (notification.format()) {
-            case ICEBERG -> {
-                IcebergTableIdentity identity = IcebergTableIdentity.fromTablePath(tablePath);
-                spark.conf().set(LOCAL_CATALOG_WAREHOUSE, identity.getWarehouse().toAbsolutePath().toString());
-                yield new IcebergType2TableAccess(identity);
-            }
-            case DELTA -> new DeltaType2TableAccess(DeltaTableIdentity.fromTablePath(tablePath), silverWarehouse);
-        };
+        IcebergTableIdentity identity = IcebergTableIdentity.fromTablePath(tablePath);
+        spark.conf().set(LOCAL_CATALOG_WAREHOUSE, identity.getWarehouse().toAbsolutePath().toString());
+        return new IcebergType2TableAccess(identity, silverWarehouse);                
     }
 
     private static void commitOffset(KafkaConsumer<String, String> consumer, ConsumerRecord<String, String> record) {

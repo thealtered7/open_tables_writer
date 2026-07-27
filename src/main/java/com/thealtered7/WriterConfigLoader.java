@@ -92,6 +92,18 @@ public final class WriterConfigLoader {
         return requireProperty("data.directory.base.path");
     }
 
+    public String datapipelinesBaseUrl() {
+        return properties.getProperty("datapipelines.http.base-url", "");
+    }
+
+    public String datapipelinesCatalogName() {
+        return properties.getProperty("datapipelines.catalog.name", "lakehouse");
+    }
+
+    public boolean datapipelinesJwtEnabled() {
+        return Boolean.parseBoolean(properties.getProperty("datapipelines.http.jwt.enabled", "false"));
+    }
+
     public Duration inputFileWaitMax() {
         return Duration.ofSeconds(longProperty("input.file.wait.max.seconds", 10));
     }
