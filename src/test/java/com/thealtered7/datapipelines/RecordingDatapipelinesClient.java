@@ -7,35 +7,40 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Test double that records registrations and can optionally throw from POST methods. */
 public final class RecordingDatapipelinesClient implements DatapipelinesClient {
 
-    private final List<BronzeTableWriteRegistration> bronzeWrites = new ArrayList<>();
-    private final List<Type2TableWriteRegistration> type2Writes = new ArrayList<>();
+    private final List<TableWriteRegistration> writes = new ArrayList<>();
     private final AtomicBoolean failPosts = new AtomicBoolean(false);
 
     public void failPosts() {
         failPosts.set(true);
     }
 
-    public List<BronzeTableWriteRegistration> bronzeWrites() {
-        return List.copyOf(bronzeWrites);
+    public List<TableWriteRegistration> writes() {
+        return List.copyOf(writes);
     }
 
-    public List<Type2TableWriteRegistration> type2Writes() {
-        return List.copyOf(type2Writes);
+    public List<TableWriteRegistration> bronzeWrites() {
+        return writes.stream()
+                .filter(w -> TableWriteRegistration.WRITE_TYPE_BRONZE.equals(w.writeType()))
+                .toList();
+    }
+
+    public List<TableWriteRegistration> type1Writes() {
+        return writes.stream()
+                .filter(w -> TableWriteRegistration.WRITE_TYPE_SILVER_TYPE_1.equals(w.writeType()))
+                .toList();
+    }
+
+    public List<TableWriteRegistration> type2Writes() {
+        return writes.stream()
+                .filter(w -> TableWriteRegistration.WRITE_TYPE_SILVER_TYPE_2.equals(w.writeType()))
+                .toList();
     }
 
     @Override
-    public void postBronzeTableWrite(BronzeTableWriteRegistration registration) {
+    public void postTableWrite(TableWriteRegistration registration) {
         if (failPosts.get()) {
-            throw new RuntimeException("forced bronze post failure");
+            throw new RuntimeException("forced table write post failure");
         }
-        bronzeWrites.add(registration);
-    }
-
-    @Override
-    public void postType2TableWrite(Type2TableWriteRegistration registration) {
-        if (failPosts.get()) {
-            throw new RuntimeException("forced type2 post failure");
-        }
-        type2Writes.add(registration);
+        writes.add(registration);
     }
 }

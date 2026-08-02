@@ -4,12 +4,7 @@ package com.thealtered7.datapipelines;
 public final class NoopDatapipelinesClient implements DatapipelinesClient {
 
     @Override
-    public void postBronzeTableWrite(BronzeTableWriteRegistration registration) {
-        // intentionally disabled
-    }
-
-    @Override
-    public void postType2TableWrite(Type2TableWriteRegistration registration) {
+    public void postTableWrite(TableWriteRegistration registration) {
         // intentionally disabled
     }
 }

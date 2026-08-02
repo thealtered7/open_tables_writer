@@ -4,10 +4,10 @@ import com.thealtered7.models.TableUpdatedNotification;
 import java.time.Instant;
 
 /**
- * Postgres source identity and silver Type 2 destination used when registering Type 2 table writes
+ * Postgres source identity and silver Type 1 destination used when registering Type 1 table writes
  * with datapipelines.
  */
-public record Type2WriteIdentity(
+public record Type1WriteIdentity(
         String sourceInstanceName,
         String sourceDatabaseName,
         String sourceSchemaName,
@@ -28,13 +28,13 @@ public record Type2WriteIdentity(
     }
 
     public static String getWriteTableName(String sourceTableName) {
-        return OpenTableNamespaces.type2Table(sourceTableName);
+        return OpenTableNamespaces.type1Table(sourceTableName);
     }
 
-    public static Type2WriteIdentity fromNotification(TableUpdatedNotification notification) {
+    public static Type1WriteIdentity fromNotification(TableUpdatedNotification notification) {
         String bronzeNamespace = notification.namespaceName();
         String sourceTableName = firstPresent(notification.sourceTableName(), notification.tableName());
-        return new Type2WriteIdentity(
+        return new Type1WriteIdentity(
                 notification.sourceInstanceName(),
                 notification.sourceDatabaseName(),
                 notification.sourceSchemaName(),

@@ -1,9 +1,10 @@
 package com.thealtered7;
 
-import com.thealtered7.datapipelines.BronzeTableWriteRegistration;
 import com.thealtered7.datapipelines.DatapipelinesClient;
 import com.thealtered7.datapipelines.KafkaWriteContext;
 import com.thealtered7.datapipelines.NoopDatapipelinesClient;
+import com.thealtered7.datapipelines.TableWriteRegistration;
+import com.thealtered7.models.FileFlushNotification;
 import com.thealtered7.observability.Observability;
 import java.nio.file.Path;
 import java.util.Date;
@@ -48,7 +49,8 @@ public class IcebergTableWriter implements TableWriter {
             Path inputFilePath,
             Path dataDirectoryBasePath,
             KafkaWriteContext kafka,
-            SourceTableIdentity source) {
+            SourceTableIdentity source,
+            FileFlushNotification flush) {
         String tableFQN = this.getTableFqn(inputFilePath);
         try {
             observability.observeCallableVoid(
@@ -57,7 +59,7 @@ public class IcebergTableWriter implements TableWriter {
                     Map.of("table", tableFQN, "input_file", inputFilePath.toString()),
                     () -> {
                         writeToTableInternal(
-                                spark, inputFilePath, dataDirectoryBasePath, tableFQN, kafka, source);
+                                spark, inputFilePath, dataDirectoryBasePath, tableFQN, kafka, source, flush);
                         return "success";
                     });
         } catch (Exception e) {
@@ -71,7 +73,8 @@ public class IcebergTableWriter implements TableWriter {
             Path dataDirectoryBasePath,
             String tableFQN,
             KafkaWriteContext kafka,
-            SourceTableIdentity source) {
+            SourceTableIdentity source,
+            FileFlushNotification flush) {
         log.info("writing to table: {}", inputFilePath.getFileName());
 
         spark.conf().set(WAREHOUSE_CONFIG, dataDirectoryBasePath.toAbsolutePath().toString());
@@ -99,7 +102,7 @@ public class IcebergTableWriter implements TableWriter {
                     """
                     CREATE TABLE %s
                     USING iceberg
-                    PARTITIONED BY (year, month, day)
+                    PARTITIONED BY (_year, _month, _day)
                     AS SELECT * FROM %s
                     """,
                     toSqlTableName(tableFQN),
@@ -115,7 +118,7 @@ public class IcebergTableWriter implements TableWriter {
                     INCOMING_VIEW));
         }
 
-        registerBronzeWrite(tableFQN, rowCount, dataDirectoryBasePath, kafka, source);
+        registerBronzeWrite(tableFQN, rowCount, dataDirectoryBasePath, kafka, source, flush);
     }
 
     private void registerBronzeWrite(
@@ -123,21 +126,39 @@ public class IcebergTableWriter implements TableWriter {
             long rowCount,
             Path dataDirectoryBasePath,
             KafkaWriteContext kafka,
-            SourceTableIdentity source) {
+            SourceTableIdentity source,
+            FileFlushNotification flush) {
         if (source == null || !source.isComplete()) {
             log.warn("Skipping datapipelines registration; missing source identity for {}", tableFQN);
             return;
         }
+        if (flush == null || flush.extractStartAt() == null || flush.extractEndAt() == null) {
+            log.warn(
+                    "Skipping datapipelines registration; missing extract_start_at/extract_end_at for {}",
+                    tableFQN);
+            return;
+        }
         try {
-            datapipelinesClient.postBronzeTableWrite(new BronzeTableWriteRegistration(
+            datapipelinesClient.postTableWrite(new TableWriteRegistration(
+                    TableWriteRegistration.WRITE_TYPE_BRONZE,
+                    source.databaseName(),
+                    OpenTableNamespaces.bronze(source.schemaName()),
+                    source.tableName(),
                     source.instanceName(),
                     source.databaseName(),
                     source.schemaName(),
                     source.tableName(),
-                    source.databaseName(),
-                    OpenTableNamespaces.bronze(source.schemaName()),
-                    source.tableName(),
                     rowCount,
+                    null,
+                    flush.rawFilePath(),
+                    flush.rawFileSize(),
+                    flush.extractJobId(),
+                    flush.extractBufferId(),
+                    flush.extractType(),
+                    flush.extractStartAt(),
+                    flush.extractEndAt(),
+                    null,
+                    null,
                     dataDirectoryBasePath.toAbsolutePath().toString(),
                     kafka));
         } catch (RuntimeException e) {

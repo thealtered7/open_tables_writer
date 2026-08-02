@@ -241,3 +241,9 @@ purge-kafka-topics:
 			--partitions $(KAFKA_TOPIC_PARTITIONS) \
 			--replication-factor $(KAFKA_TOPIC_REPLICATION); \
 	done
+
+start-daemons: run-iceberg-table-writer-docker run-create-type2-dimension-docker
+	
+stop-daemons: stop-iceberg-table-writer-docker stop-create-type2-dimension-docker
+	
+restart-daemons: stop-daemons build-docker start-daemons

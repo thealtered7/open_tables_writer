@@ -1,41 +1,36 @@
-package com.thealtered7.models;
+package com.thealtered7.datapipelines;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.Instant;
 
 /**
- * Kafka notification that a bronze open table was written. Java fields are camelCase; JSON uses
- * snake_case aligned with {@code POST /table-writes} source/extract fields plus bronze table
- * identity for downstream silver writers.
+ * Request body for the datapipelines {@code POST /table-writes} endpoint. Field names use the
+ * snake_case shape the service expects.
  */
-public record TableUpdatedNotification(
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public record TableWriteRequest(
         @JsonProperty("write_type") String writeType,
-        @JsonProperty("table_fqn") String tableFqn,
-        @JsonProperty("table_path") String tablePath,
-        @JsonProperty("format") OpenTableFormat format,
         @JsonProperty("catalog_name") String catalogName,
-        @JsonProperty("database_name") String databaseName,
         @JsonProperty("namespace_name") String namespaceName,
+        @JsonProperty("database_name") String databaseName,
         @JsonProperty("table_name") String tableName,
-        @JsonProperty("warehouse_path") String warehousePath,
         @JsonProperty("source_instance_name") String sourceInstanceName,
         @JsonProperty("source_database_name") String sourceDatabaseName,
         @JsonProperty("source_schema_name") String sourceSchemaName,
         @JsonProperty("source_table_name") String sourceTableName,
+        @JsonProperty("kafka_topic") String kafkaTopic,
+        @JsonProperty("kafka_partition") Integer kafkaPartition,
+        @JsonProperty("kafka_offset") Long kafkaOffset,
+        @JsonProperty("write_row_count") Long writeRowCount,
+        @JsonProperty("merge_row_count") Long mergeRowCount,
         @JsonProperty("raw_file_path") String rawFilePath,
         @JsonProperty("raw_file_size") Long rawFileSize,
         @JsonProperty("extract_job_id") String extractJobId,
         @JsonProperty("extract_buffer_id") String extractBufferId,
         @JsonProperty("extract_type") String extractType,
         @JsonProperty("extract_start_at") Instant extractStartAt,
-        @JsonProperty("extract_end_at") Instant extractEndAt) {
-
-    public enum OpenTableFormat {
-        ICEBERG,
-        DELTA;
-
-        public static OpenTableFormat fromString(String value) {
-            return OpenTableFormat.valueOf(value.toUpperCase());
-        }
-    }
-}
+        @JsonProperty("extract_end_at") Instant extractEndAt,
+        @JsonProperty("merge_start_at") Instant mergeStartAt,
+        @JsonProperty("merge_end_at") Instant mergeEndAt,
+        @JsonProperty("warehouse_path") String warehousePath) {}

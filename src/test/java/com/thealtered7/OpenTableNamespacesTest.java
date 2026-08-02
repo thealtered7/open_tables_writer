@@ -28,6 +28,11 @@ class OpenTableNamespacesTest {
     }
 
     @Test
+    void type1TableAppendsSuffix() {
+        assertEquals("scalars_type1", OpenTableNamespaces.type1Table("scalars"));
+    }
+
+    @Test
     void toBronzeTableFqnRewritesSchemaSegment() {
         assertEquals("geo.public_bronze.scalars", OpenTableNamespaces.toBronzeTableFqn("geo.public.scalars"));
     }

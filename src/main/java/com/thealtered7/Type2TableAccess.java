@@ -28,5 +28,13 @@ interface Type2TableAccess {
 
     void mergeSilver(SparkSession spark, String stagingView, String onColumn, String updateSetClause);
 
+    boolean type1Exists(SparkSession spark);
+
+    void createType1(SparkSession spark, String stagingView);
+
+    void mergeType1(SparkSession spark, String stagingView, String onColumn, String updateSetClause);
+
     void addIsDeletedColumn(SparkSession spark, String columnName);
+
+    void addVersionKeyColumn(SparkSession spark, String columnName, String primaryKeyColumn, String validFromColumn);
 }

@@ -2,11 +2,13 @@ package com.thealtered7;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.Set;
 
-import com.thealtered7.datapipelines.BronzeTableWriteRegistration;
 import com.thealtered7.datapipelines.KafkaWriteContext;
 import com.thealtered7.datapipelines.RecordingDatapipelinesClient;
+import com.thealtered7.datapipelines.TableWriteRegistration;
+import com.thealtered7.models.FileFlushNotification;
 import com.thealtered7.observability.Observability;
 import org.apache.spark.sql.SparkSession;
 import org.junit.jupiter.api.AfterAll;
@@ -25,7 +27,7 @@ import org.apache.spark.sql.Row;
 class IcebergTableWriterTest {
 
     private static final String SAMPLE_JSON_LINE = """
-            {"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":1,"name":"scalar","value":1.06,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T01:55:32.887469Z"},"after":{"id":1,"name":"scalar","value":1.04,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z"},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194444244,"snapshot":"false","db":"geo","sequence":"[\\"32589016\\",\\"32591512\\"]","ts_us":1780194444244620,"ts_ns":1780194444244620000,"schema":"public","table":"scalars","txId":22179,"lsn":32591512,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"u","ts_ms":1780194444583,"ts_us":1780194444583639,"ts_ns":1780194444583639448}}
+            {"extract":{"extract_job_id":"job-1","extract_buffer_id":"buf-1","extract_type":"cdc"},"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":1,"name":"scalar","value":1.06,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T01:55:32.887469Z"},"after":{"id":1,"name":"scalar","value":1.04,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z"},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194444244,"snapshot":"false","db":"geo","sequence":"[\\"32589016\\",\\"32591512\\"]","ts_us":1780194444244620,"ts_ns":1780194444244620000,"schema":"public","table":"scalars","txId":22179,"lsn":32591512,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"u","ts_ms":1780194444583,"ts_us":1780194444583639,"ts_ns":1780194444583639448}}
             """;
 
     private static SparkSession spark;
@@ -96,8 +98,9 @@ class IcebergTableWriterTest {
 
         assertTrue(columns.contains("before_id"));
         assertTrue(columns.contains("after_id"));
-        assertTrue(columns.contains("source_db"));
-        assertTrue(columns.contains("op"));
+        assertTrue(columns.contains("_source_db"));
+        assertTrue(columns.contains("_op"));
+        assertTrue(columns.contains("_extract_job_id"));
 
         IcebergTableWriter writer = new IcebergTableWriter();
         writer.writeToTable(spark, inputFile, dataDirectory);
@@ -113,12 +116,26 @@ class IcebergTableWriterTest {
         KafkaWriteContext kafka = new KafkaWriteContext("cdc-file-write", 1, 99L);
         SourceTableIdentity source =
                 new SourceTableIdentity("test-instance", "geo", "public", "register_check");
+        Instant extractStart = Instant.parse("2026-05-31T02:50:21Z");
+        Instant extractEnd = Instant.parse("2026-05-31T02:51:21Z");
+        FileFlushNotification flush = sampleFlush(
+                inputFile.toString(),
+                "job-1",
+                "buf-1",
+                "cdc",
+                extractStart,
+                extractEnd,
+                "test-instance",
+                "geo",
+                "public",
+                "register_check");
         IcebergTableWriter writer = new IcebergTableWriter(Observability.noop(), client);
-        writer.writeToTable(spark, inputFile, dataDirectory, kafka, source);
+        writer.writeToTable(spark, inputFile, dataDirectory, kafka, source, flush);
 
         assertEquals(1, client.bronzeWrites().size());
         assertEquals(0, client.type2Writes().size());
-        BronzeTableWriteRegistration registration = client.bronzeWrites().get(0);
+        TableWriteRegistration registration = client.bronzeWrites().get(0);
+        assertEquals(TableWriteRegistration.WRITE_TYPE_BRONZE, registration.writeType());
         assertEquals("test-instance", registration.sourceInstanceName());
         assertEquals("geo", registration.sourceDatabaseName());
         assertEquals("public", registration.sourceSchemaName());
@@ -126,9 +143,35 @@ class IcebergTableWriterTest {
         assertEquals("geo", registration.databaseName());
         assertEquals("public_bronze", registration.namespaceName());
         assertEquals("register_check", registration.tableName());
-        assertEquals(1L, registration.rowCount());
+        assertEquals(1L, registration.writeRowCount());
+        assertEquals(null, registration.mergeRowCount());
+        assertEquals(inputFile.toString(), registration.rawFilePath());
+        assertEquals(100L, registration.rawFileSize());
+        assertEquals("job-1", registration.extractJobId());
+        assertEquals("buf-1", registration.extractBufferId());
+        assertEquals("cdc", registration.extractType());
+        assertEquals(extractStart, registration.extractStartAt());
+        assertEquals(extractEnd, registration.extractEndAt());
+        assertEquals(null, registration.mergeStartAt());
+        assertEquals(null, registration.mergeEndAt());
         assertEquals(dataDirectory.toAbsolutePath().toString(), registration.warehousePath());
         assertEquals(kafka, registration.kafka());
+    }
+
+    @Test
+    void writeToTableSkipsRegistrationWhenExtractTimesMissing(@TempDir Path tempDir) throws Exception {
+        Path inputFile = tempDir.resolve("geo.public.skip_extract-2026-05-31_02-51-21.jsonl");
+        Files.writeString(inputFile, SAMPLE_JSON_LINE);
+        Path dataDirectory = tempDir.resolve("warehouse-skip");
+
+        RecordingDatapipelinesClient client = new RecordingDatapipelinesClient();
+        SourceTableIdentity source =
+                new SourceTableIdentity("test-instance", "geo", "public", "skip_extract");
+        IcebergTableWriter writer = new IcebergTableWriter(Observability.noop(), client);
+        writer.writeToTable(spark, inputFile, dataDirectory, null, source, null);
+
+        assertEquals(0, client.bronzeWrites().size());
+        assertTrue(spark.catalog().tableExists("local_catalog.geo.public_bronze.skip_extract"));
     }
 
     @Test
@@ -141,9 +184,20 @@ class IcebergTableWriterTest {
         client.failPosts();
         SourceTableIdentity source =
                 new SourceTableIdentity("test-instance", "geo", "public", "register_fail");
+        FileFlushNotification flush = sampleFlush(
+                inputFile.toString(),
+                "job-fail",
+                "buf-fail",
+                "cdc",
+                Instant.parse("2026-05-31T02:50:21Z"),
+                Instant.parse("2026-05-31T02:51:21Z"),
+                "test-instance",
+                "geo",
+                "public",
+                "register_fail");
         IcebergTableWriter writer = new IcebergTableWriter(Observability.noop(), client);
 
-        assertDoesNotThrow(() -> writer.writeToTable(spark, inputFile, dataDirectory, null, source));
+        assertDoesNotThrow(() -> writer.writeToTable(spark, inputFile, dataDirectory, null, source, flush));
         assertTrue(spark.catalog().tableExists("local_catalog.geo.public_bronze.register_fail"));
         assertEquals(0, client.bronzeWrites().size());
     }
@@ -154,6 +208,35 @@ class IcebergTableWriterTest {
         System.clearProperty("data.directory.base.path");
 
         assertThrowsExactly(NullPointerException.class, () -> IcebergTableWriterOneShot.main(new String[] {}));
+    }
+
+    private static FileFlushNotification sampleFlush(
+            String rawFilePath,
+            String extractJobId,
+            String extractBufferId,
+            String extractType,
+            Instant extractStartAt,
+            Instant extractEndAt,
+            String sourceInstanceName,
+            String sourceDatabaseName,
+            String sourceSchemaName,
+            String sourceTableName) {
+        return new FileFlushNotification(
+                "raw",
+                rawFilePath,
+                sourceDatabaseName + "." + sourceSchemaName + "." + sourceTableName,
+                extractJobId,
+                extractBufferId,
+                extractType,
+                extractStartAt,
+                extractEndAt,
+                1L,
+                100L,
+                sourceInstanceName,
+                sourceDatabaseName,
+                sourceSchemaName,
+                sourceTableName,
+                "/opt/data/raw/");
     }
 
     private static String invokeGetTableFqn(IcebergTableWriter writer, Path inputFile) {

@@ -1,13 +1,15 @@
 package com.thealtered7;
 
 /**
- * Lakehouse open-table naming: bronze tables live in {@code ${source_schema}_bronze}, silver Type 2
- * tables in {@code ${source_schema}_silver.${source_table}_type2}.
+ * Lakehouse open-table naming: bronze tables live in {@code ${source_schema}_bronze}, silver Type 1
+ * tables in {@code ${source_schema}_silver.${source_table}_type1}, and silver Type 2 tables in
+ * {@code ${source_schema}_silver.${source_table}_type2}.
  */
 public final class OpenTableNamespaces {
 
     private static final String BRONZE_SUFFIX = "_bronze";
     private static final String SILVER_SUFFIX = "_silver";
+    private static final String TYPE1_SUFFIX = "_type1";
     private static final String TYPE2_SUFFIX = "_type2";
 
     private OpenTableNamespaces() {}
@@ -18,6 +20,11 @@ public final class OpenTableNamespaces {
 
     public static String silver(String sourceSchemaName) {
         return sourceSchemaName + SILVER_SUFFIX;
+    }
+
+    /** Silver Type 1 table name: {@code ${source_table}_type1}. */
+    public static String type1Table(String sourceTableName) {
+        return sourceTableName + TYPE1_SUFFIX;
     }
 
     /** Silver Type 2 table name: {@code ${source_table}_type2}. */

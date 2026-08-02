@@ -121,18 +121,19 @@ public class Type2DimensionKafkaDaemon {
                                 OBJECT_MAPPER.readValue(record.value(), TableUpdatedNotification.class);
                         observability.lowCardinalityTag("table", notification.tableFqn());
                         log.info(
-                                "Processing table-updated notification: tableFqn={}, format={}, tablePath={}, runGuid={}",
+                                "Processing table-updated notification: table_fqn={}, format={}, table_path={}, extract_job_id={}",
                                 notification.tableFqn(),
                                 notification.format(),
                                 notification.tablePath(),
-                                notification.runGuid());
+                                notification.extractJobId());
 
                         Type2TableAccess access = tableAccessFor(notification, silverWarehouse, spark);
                         transformer.transform(
                                 spark,
                                 access,
                                 KafkaWriteContext.fromRecord(record),
-                                Type2WriteIdentity.fromNotification(notification));
+                                Type2WriteIdentity.fromNotification(notification),
+                                Type1WriteIdentity.fromNotification(notification));
                         commitOffset(consumer, record);
                         return "success";
                     });

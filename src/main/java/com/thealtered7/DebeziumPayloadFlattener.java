@@ -1,7 +1,6 @@
 package com.thealtered7;
 
 import com.thealtered7.observability.Observability;
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -31,6 +30,8 @@ public final class DebeziumPayloadFlattener {
     private static final Logger log = LoggerFactory.getLogger(DebeziumPayloadFlattener.class);
     private static final Set<String> PREFIXED_STRUCTS = Set.of("before", "after", "source");
     private static final Set<String> TOP_LEVEL_FIELDS = Set.of("op", "transaction", "ts_ms", "ts_ns", "ts_us");
+    private static final Set<String> BUSINESS_IMAGE_PREFIXES = Set.of("before_", "after_");
+    private static final String EXTRACT_STRUCT = "extract";
     private static final String ISO_TIMESTAMP_FORMAT = "yyyy-MM-dd'T'HH:mm:ss[.SSSSSS]'Z'";
 
     private final Observability observability;
@@ -80,18 +81,35 @@ public final class DebeziumPayloadFlattener {
             String name = field.name();
             if (PREFIXED_STRUCTS.contains(name)) {
                 if (field.dataType() instanceof StructType structType) {
-                    expandStruct(columns, name, structType);
+                    expandPayloadStruct(columns, name, structType);
                 } else if (("before".equals(name) || "after".equals(name)) && rowDataSchema != null) {
                     expandNullStruct(columns, name, rowDataSchema);
                 } else {
                     log.warn("Skipping non-struct payload field {} of type {}", name, field.dataType());
                 }
             } else if (TOP_LEVEL_FIELDS.contains(name)) {
-                columns.add(col("payload." + name).alias(name));
+                columns.add(col("payload." + name).alias(metadataAlias(name)));
             }
         }
 
+        expandExtractStruct(raw, columns);
+
         return raw.select(columns.toArray(Column[]::new));
+    }
+
+    private void expandExtractStruct(Dataset<Row> raw, List<Column> columns) {
+        try {
+            StructField extractField = raw.schema().apply(EXTRACT_STRUCT);
+            if (!(extractField.dataType() instanceof StructType extractSchema)) {
+                return;
+            }
+            for (StructField nested : extractSchema.fields()) {
+                String alias = metadataAlias(nested.name());
+                columns.add(col(EXTRACT_STRUCT + "." + nested.name()).alias(alias));
+            }
+        } catch (IllegalArgumentException ignored) {
+            // extract is optional for older/raw fixtures without the wrapper
+        }
     }
 
     private StructType resolveRowDataSchema(StructType payloadSchema) {
@@ -108,9 +126,12 @@ public final class DebeziumPayloadFlattener {
         return null;
     }
 
-    private void expandStruct(List<Column> columns, String structName, StructType structType) {
+    private void expandPayloadStruct(List<Column> columns, String structName, StructType structType) {
         for (StructField nested : structType.fields()) {
             String alias = structName + "_" + nested.name();
+            if (!isBusinessImageColumn(alias)) {
+                alias = metadataAlias(alias);
+            }
             columns.add(col("payload." + structName + "." + nested.name()).alias(alias));
         }
     }
@@ -118,8 +139,24 @@ public final class DebeziumPayloadFlattener {
     private void expandNullStruct(List<Column> columns, String structName, StructType structType) {
         for (StructField nested : structType.fields()) {
             String alias = structName + "_" + nested.name();
+            if (!isBusinessImageColumn(alias)) {
+                alias = metadataAlias(alias);
+            }
             columns.add(lit(null).cast(nested.dataType()).alias(alias));
         }
+    }
+
+    private static boolean isBusinessImageColumn(String name) {
+        for (String prefix : BUSINESS_IMAGE_PREFIXES) {
+            if (name.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String metadataAlias(String name) {
+        return name.startsWith("_") ? name : "_" + name;
     }
 
     public Dataset<Row> convertTimestampColumns(Dataset<Row> flat) {
@@ -209,9 +246,9 @@ public final class DebeziumPayloadFlattener {
 
     private Dataset<Row> addDatePartitionColumnsInternal(Dataset<Row> df, Date now) {
         DatePartition partition = getDatePartitionInternal(now);
-        return df.withColumn("year", lit(partition.year()))
-                .withColumn("month", lit(partition.month()))
-                .withColumn("day", lit(partition.day()));
+        return df.withColumn("_year", lit(partition.year()))
+                .withColumn("_month", lit(partition.month()))
+                .withColumn("_day", lit(partition.day()));
     }
 
     public record DatePartition(int year, int month, int day) {

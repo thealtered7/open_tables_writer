@@ -1,6 +1,8 @@
 package com.thealtered7.datapipelines;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.thealtered7.observability.Observability;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -14,7 +16,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Posts completed table writes to the datapipelines service using the JDK {@link HttpClient}.
- * Bronze writes go to {@code /bronze-table-writes} and Type 2 writes to {@code /type2-table-writes}.
+ * All write types go to {@code POST /table-writes} with a {@code write_type} discriminator.
  *
  * <p>Each POST throws on transport failure or a non-2xx response; callers register writes on a
  * best-effort basis and log rather than fail the underlying table write.
@@ -22,8 +24,7 @@ import org.slf4j.LoggerFactory;
 public final class DatapipelinesHttpClient implements DatapipelinesClient {
 
     private static final Logger log = LoggerFactory.getLogger(DatapipelinesHttpClient.class);
-    private static final String BRONZE_PATH = "/bronze-table-writes";
-    private static final String TYPE2_PATH = "/type2-table-writes";
+    private static final String TABLE_WRITES_PATH = "/table-writes";
     private static final String DEFAULT_CATALOG = "lakehouse";
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
     private static final String JWT_SECRET_ENV_VAR = "DATAPIPELINES_JWT_SECRET_KEY";
@@ -34,8 +35,7 @@ public final class DatapipelinesHttpClient implements DatapipelinesClient {
     private final ObjectMapper objectMapper;
     private final Observability observability;
     private final String catalogName;
-    private final URI bronzeEndpoint;
-    private final URI type2Endpoint;
+    private final URI tableWritesEndpoint;
     private final JwtTokenProvider jwtTokenProvider;
 
     public DatapipelinesHttpClient(
@@ -58,8 +58,7 @@ public final class DatapipelinesHttpClient implements DatapipelinesClient {
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.observability = Objects.requireNonNull(observability, "observability");
         String base = stripTrailingSlash(Objects.requireNonNull(baseUrl, "baseUrl"));
-        this.bronzeEndpoint = URI.create(base + BRONZE_PATH);
-        this.type2Endpoint = URI.create(base + TYPE2_PATH);
+        this.tableWritesEndpoint = URI.create(base + TABLE_WRITES_PATH);
         this.catalogName = catalogName;
         this.jwtTokenProvider = jwtTokenProvider;
     }
@@ -78,7 +77,7 @@ public final class DatapipelinesHttpClient implements DatapipelinesClient {
         JwtTokenProvider jwtTokenProvider = jwtEnabled ? buildJwtTokenProvider() : null;
         String catalog = (catalogName == null || catalogName.isBlank()) ? DEFAULT_CATALOG : catalogName.trim();
         DatapipelinesHttpClient client = new DatapipelinesHttpClient(
-                httpClient, new ObjectMapper(), observability, baseUrl, catalog, jwtTokenProvider);
+                httpClient, newObjectMapper(), observability, baseUrl, catalog, jwtTokenProvider);
         log.info(
                 "Datapipelines HTTP client enabled; base URL {} (jwt {})",
                 stripTrailingSlash(baseUrl),
@@ -95,53 +94,47 @@ public final class DatapipelinesHttpClient implements DatapipelinesClient {
         return new JwtTokenProvider(secret, JWT_SUBJECT, JWT_TOKEN_TTL);
     }
 
-    @Override
-    public void postBronzeTableWrite(BronzeTableWriteRegistration registration) {
-        post("bronze_table_write", bronzeEndpoint, registration.tableName(), toBronzeRequest(registration));
+    private static ObjectMapper newObjectMapper() {
+        return new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
     @Override
-    public void postType2TableWrite(Type2TableWriteRegistration registration) {
-        post("type2_table_write", type2Endpoint, registration.tableName(), toType2Request(registration));
+    public void postTableWrite(TableWriteRegistration registration) {
+        post("table_write", registration.tableName(), toRequest(registration));
     }
 
-    private BronzeTableWriteRequest toBronzeRequest(BronzeTableWriteRegistration registration) {
+    private TableWriteRequest toRequest(TableWriteRegistration registration) {
         KafkaWriteContext kafka = registration.kafka();
-        return new BronzeTableWriteRequest(
+        return new TableWriteRequest(
+                registration.writeType(),
                 catalogName,
+                registration.namespaceName(),
+                registration.databaseName(),
+                registration.tableName(),
                 registration.sourceInstanceName(),
                 registration.sourceDatabaseName(),
                 registration.sourceSchemaName(),
                 registration.sourceTableName(),
-                registration.databaseName(),
-                registration.namespaceName(),
-                registration.tableName(),
-                registration.rowCount(),
                 kafka == null ? null : kafka.topic(),
                 kafka == null ? null : kafka.partition(),
                 kafka == null ? null : kafka.offset(),
+                registration.writeRowCount(),
+                registration.mergeRowCount(),
+                registration.rawFilePath(),
+                registration.rawFileSize(),
+                registration.extractJobId(),
+                registration.extractBufferId(),
+                registration.extractType(),
+                registration.extractStartAt(),
+                registration.extractEndAt(),
+                registration.mergeStartAt(),
+                registration.mergeEndAt(),
                 registration.warehousePath());
     }
 
-    private Type2TableWriteRequest toType2Request(Type2TableWriteRegistration registration) {
-        KafkaWriteContext kafka = registration.kafka();
-        return new Type2TableWriteRequest(
-                catalogName,
-                registration.sourceCatalogName(),
-                registration.sourceDatabaseName(),
-                registration.sourceNamespaceName(),
-                registration.sourceTableName(),
-                registration.databaseName(),
-                registration.namespaceName(),
-                registration.tableName(),
-                registration.rowCount(),
-                kafka == null ? null : kafka.topic(),
-                kafka == null ? null : kafka.partition(),
-                kafka == null ? null : kafka.offset(),
-                registration.warehousePath());
-    }
-
-    private void post(String operation, URI endpoint, String tableName, Object requestBody) {
+    private void post(String operation, String tableName, Object requestBody) {
         Objects.requireNonNull(requestBody, "requestBody");
         try {
             observability.observeCallableVoid(
@@ -149,13 +142,13 @@ public final class DatapipelinesHttpClient implements DatapipelinesClient {
                     operation,
                     Map.of("table", String.valueOf(tableName)),
                     () -> {
-                        send(endpoint, requestBody);
+                        send(tableWritesEndpoint, requestBody);
                         return "success";
                     });
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
-            throw new RuntimeException("Failed to POST to " + endpoint, e);
+            throw new RuntimeException("Failed to POST to " + tableWritesEndpoint, e);
         }
     }
 

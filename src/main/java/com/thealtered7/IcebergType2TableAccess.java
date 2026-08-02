@@ -34,6 +34,7 @@ class IcebergType2TableAccess implements Type2TableAccess {
 
     @Override
     public Dataset<Row> readBronze(SparkSession spark) {
+        refreshIfExists(spark, table.getCatalogTableName());
         return spark.table(table.getCatalogTableName());
     }
 
@@ -44,6 +45,7 @@ class IcebergType2TableAccess implements Type2TableAccess {
 
     @Override
     public Dataset<Row> readSilver(SparkSession spark) {
+        refreshIfExists(spark, silverCatalogTableName());
         return spark.table(silverCatalogTableName());
     }
 
@@ -77,10 +79,53 @@ class IcebergType2TableAccess implements Type2TableAccess {
     }
 
     @Override
+    public boolean type1Exists(SparkSession spark) {
+        return spark.catalog().tableExists(type1CatalogTableName());
+    }
+
+    @Override
+    public void createType1(SparkSession spark, String stagingView) {
+        spark.sql(String.format(
+                """
+                CREATE TABLE %s
+                USING iceberg
+                AS SELECT * FROM %s
+                """,
+                type1SqlTableName(),
+                stagingView));
+    }
+
+    @Override
+    public void mergeType1(SparkSession spark, String stagingView, String onColumn, String updateSetClause) {
+        spark.sql(String.format(
+                """
+                MERGE INTO %s AS t
+                USING %s AS s
+                ON t.%s = s.%s
+                WHEN MATCHED THEN UPDATE SET %s
+                WHEN NOT MATCHED THEN INSERT *
+                """,
+                type1SqlTableName(),
+                stagingView,
+                onColumn,
+                onColumn,
+                updateSetClause));
+    }
+
+    @Override
     public void addIsDeletedColumn(SparkSession spark, String columnName) {
         spark.sql(String.format("ALTER TABLE %s ADD COLUMN %s boolean", silverSqlTableName(), columnName));
         spark.sql(String.format(
                 "UPDATE %s SET %s = false WHERE %s IS NULL", silverSqlTableName(), columnName, columnName));
+    }
+
+    @Override
+    public void addVersionKeyColumn(
+            SparkSession spark, String columnName, String primaryKeyColumn, String validFromColumn) {
+        spark.sql(String.format("ALTER TABLE %s ADD COLUMN %s string", silverSqlTableName(), columnName));
+        spark.sql(String.format(
+                "UPDATE %s SET %s = sha2(concat_ws('|', %s, cast(%s as string)), 256) WHERE %s IS NULL",
+                silverSqlTableName(), columnName, primaryKeyColumn, validFromColumn, columnName));
     }
 
     private String silverCatalogTableName() {
@@ -95,5 +140,25 @@ class IcebergType2TableAccess implements Type2TableAccess {
         String silverNamespace = OpenTableNamespaces.silverFromBronze(parts[1]);
         String silverTable = OpenTableNamespaces.type2Table(parts[2]);
         return String.format("silver_catalog.`%s`.`%s`.`%s`", parts[0], silverNamespace, silverTable);
+    }
+
+    private String type1CatalogTableName() {
+        String[] parts = table.getTableFqn().split("\\.");
+        String silverNamespace = OpenTableNamespaces.silverFromBronze(parts[1]);
+        String type1Table = OpenTableNamespaces.type1Table(parts[2]);
+        return String.format("silver_catalog.%s.%s.%s", parts[0], silverNamespace, type1Table);
+    }
+
+    private String type1SqlTableName() {
+        String[] parts = table.getTableFqn().split("\\.");
+        String silverNamespace = OpenTableNamespaces.silverFromBronze(parts[1]);
+        String type1Table = OpenTableNamespaces.type1Table(parts[2]);
+        return String.format("silver_catalog.`%s`.`%s`.`%s`", parts[0], silverNamespace, type1Table);
+    }
+
+    private static void refreshIfExists(SparkSession spark, String catalogTableName) {
+        if (spark.catalog().tableExists(catalogTableName)) {
+            spark.catalog().refreshTable(catalogTableName);
+        }
     }
 }

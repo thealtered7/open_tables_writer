@@ -41,7 +41,7 @@ class DebeziumPayloadFlattenerTest {
     @Test
     void flattenPayloadAndConvertTimestamps(@TempDir Path tempDir) throws Exception {
         String jsonLine = """
-                {"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":1,"name":"scalar","value":1.06,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T01:55:32.887469Z"},"after":{"id":1,"name":"scalar","value":1.04,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z"},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194444244,"snapshot":"false","db":"geo","sequence":"[\\"32589016\\",\\"32591512\\"]","ts_us":1780194444244620,"ts_ns":1780194444244620000,"schema":"public","table":"scalars","txId":22179,"lsn":32591512,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"u","ts_ms":1780194444583,"ts_us":1780194444583639,"ts_ns":1780194444583639448}}
+                {"extract":{"extract_job_id":"job-1","extract_buffer_id":"buf-1","extract_type":"cdc"},"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":1,"name":"scalar","value":1.06,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T01:55:32.887469Z"},"after":{"id":1,"name":"scalar","value":1.04,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z"},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194444244,"snapshot":"false","db":"geo","sequence":"[\\"32589016\\",\\"32591512\\"]","ts_us":1780194444244620,"ts_ns":1780194444244620000,"schema":"public","table":"scalars","txId":22179,"lsn":32591512,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"u","ts_ms":1780194444583,"ts_us":1780194444583639,"ts_ns":1780194444583639448}}
                 """;
         Path inputFile = tempDir.resolve("geo.public.scalars-2026-05-31_02-51-21.jsonl");
         Files.writeString(inputFile, jsonLine);
@@ -53,10 +53,17 @@ class DebeziumPayloadFlattenerTest {
         List<String> columnNames = Arrays.asList(withTimestamps.columns());
         assertTrue(columnNames.contains("before_id"));
         assertTrue(columnNames.contains("after_id"));
-        assertTrue(columnNames.contains("source_db"));
-        assertTrue(columnNames.contains("op"));
-        assertTrue(columnNames.contains("ts_ms"));
+        assertTrue(columnNames.contains("_source_db"));
+        assertTrue(columnNames.contains("_op"));
+        assertTrue(columnNames.contains("_ts_ms"));
+        assertTrue(columnNames.contains("_extract_job_id"));
+        assertTrue(columnNames.contains("_extract_buffer_id"));
+        assertTrue(columnNames.contains("_extract_type"));
 
+        Row row = withTimestamps.first();
+        assertEquals("job-1", row.getAs("_extract_job_id"));
+        assertEquals("buf-1", row.getAs("_extract_buffer_id"));
+        assertEquals("cdc", row.getAs("_extract_type"));
         assertEquals(DataTypes.TimestampType, withTimestamps.schema().apply("before_created_at").dataType());
         assertEquals(1L, withTimestamps.count());
     }
@@ -75,8 +82,8 @@ class DebeziumPayloadFlattenerTest {
         List<String> columnNames = Arrays.asList(flat.columns());
         assertTrue(columnNames.contains("after_id"));
         assertTrue(columnNames.contains("before_id"));
-        assertTrue(columnNames.contains("source_db"));
-        assertTrue(columnNames.contains("op"));
+        assertTrue(columnNames.contains("_source_db"));
+        assertTrue(columnNames.contains("_op"));
 
         Row row = flat.first();
         assertTrue(row.isNullAt(flat.schema().fieldIndex("before_id")));
@@ -97,8 +104,8 @@ class DebeziumPayloadFlattenerTest {
         List<String> columnNames = Arrays.asList(flat.columns());
         assertTrue(columnNames.contains("before_id"));
         assertTrue(columnNames.contains("after_id"));
-        assertTrue(columnNames.contains("source_db"));
-        assertTrue(columnNames.contains("op"));
+        assertTrue(columnNames.contains("_source_db"));
+        assertTrue(columnNames.contains("_op"));
 
         Row row = flat.first();
         assertTrue(row.isNullAt(flat.schema().fieldIndex("after_id")));

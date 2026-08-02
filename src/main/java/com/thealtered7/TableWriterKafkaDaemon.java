@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.thealtered7.datapipelines.DatapipelinesClient;
 import com.thealtered7.datapipelines.DatapipelinesHttpClient;
 import com.thealtered7.datapipelines.KafkaWriteContext;
+import com.thealtered7.datapipelines.TableWriteRegistration;
 import com.thealtered7.models.FileFlushNotification;
 import com.thealtered7.models.FileFlushNotificationJson;
 import com.thealtered7.models.TableUpdatedNotification;
@@ -145,17 +146,17 @@ public class TableWriterKafkaDaemon {
                                 OBJECT_MAPPER.readValue(record.value(), FileFlushNotification.class);
                         observability.lowCardinalityTag("table", notification.tableName());
                         log.info(
-                                "Processing flush notification: filePath={}, tableName={}, runGuid={}, writtenAt={}",
-                                notification.filePath(),
+                                "Processing flush notification: rawFilePath={}, tableName={}, extractJobId={}, extractEndAt={}",
+                                notification.rawFilePath(),
                                 notification.tableName(),
-                                notification.runGuid(),
-                                notification.writtenAt());
+                                notification.extractJobId(),
+                                notification.extractEndAt());
 
-                        Path inputFilePath = Path.of(notification.filePath());
+                        Path inputFilePath = Path.of(notification.rawFilePath());
                         if (!InputFileWaiter.waitForFile(
                                 inputFilePath, config.inputFileWaitMax(), config.inputFileWaitPollInterval())) {
                             log.error(
-                                    "Input file not found after wait; skipping message. filePath={}. "
+                                    "Input file not found after wait; skipping message. rawFilePath={}. "
                                             + "Ensure pgoutput and writer share host /opt/data "
                                             + "(pgoutput writes to /opt/data/raw).",
                                     inputFilePath);
@@ -169,7 +170,8 @@ public class TableWriterKafkaDaemon {
                                 inputFilePath,
                                 dataDirectoryBasePath,
                                 KafkaWriteContext.fromRecord(record),
-                                source);
+                                source,
+                                notification);
                         publishTableUpdated(
                                 publisher,
                                 writer,
@@ -207,18 +209,26 @@ public class TableWriterKafkaDaemon {
                 sourceIdentity != null ? OpenTableNamespaces.bronze(sourceIdentity.schemaName()) : null;
         String tableName = sourceIdentity != null ? sourceIdentity.tableName() : null;
         TableUpdatedNotification notification = new TableUpdatedNotification(
+                TableWriteRegistration.WRITE_TYPE_BRONZE,
                 tableFqn,
                 tablePath.toAbsolutePath().toString(),
                 writer.format(),
-                source.runGuid(),
-                source.writtenAt(),
                 config.datapipelinesCatalogName(),
                 databaseName,
                 bronzeNamespace,
                 tableName,
+                dataDirectoryBasePath.toAbsolutePath().toString(),
+                sourceIdentity != null ? sourceIdentity.instanceName() : null,
                 databaseName,
-                bronzeNamespace,
-                tableName);
+                sourceIdentity != null ? sourceIdentity.schemaName() : null,
+                tableName,
+                source.rawFilePath(),
+                source.rawFileSize(),
+                source.extractJobId(),
+                source.extractBufferId(),
+                source.extractType(),
+                source.extractStartAt(),
+                source.extractEndAt());
         publisher.publish(notification);
     }
 

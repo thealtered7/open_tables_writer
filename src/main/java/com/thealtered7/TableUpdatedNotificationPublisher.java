@@ -41,15 +41,25 @@ public class TableUpdatedNotificationPublisher implements AutoCloseable {
     public void publish(TableUpdatedNotification notification) {
         try {
             String value = OBJECT_MAPPER.writeValueAsString(notification);
-            producer.send(new ProducerRecord<>(topic, notification.tableFqn(), value));
+            String key = notificationKey(notification);
+            producer.send(new ProducerRecord<>(topic, key, value));
             log.info(
-                    "Published table-updated notification: topic={}, tableFqn={}, format={}",
+                    "Published table-updated notification: topic={}, key={}, table_fqn={}, format={}",
                     topic,
+                    key,
                     notification.tableFqn(),
                     notification.format());
         } catch (Exception e) {
             log.error("Failed to publish table-updated notification for {}", notification.tableFqn(), e);
         }
+    }
+
+    static String notificationKey(TableUpdatedNotification notification) {
+        String bufferId = notification.extractBufferId();
+        if (bufferId != null && !bufferId.isBlank()) {
+            return bufferId;
+        }
+        return notification.tableFqn();
     }
 
     @Override
