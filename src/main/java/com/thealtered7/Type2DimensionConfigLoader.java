@@ -1,5 +1,6 @@
 package com.thealtered7;
 
+import com.thealtered7.schemaregistry.SchemaRegistryConfig;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -80,6 +81,10 @@ public final class Type2DimensionConfigLoader {
 
     public boolean datapipelinesJwtEnabled() {
         return Boolean.parseBoolean(properties.getProperty("datapipelines.http.jwt.enabled", "false"));
+    }
+
+    public SchemaRegistryConfig schemaRegistryConfig() {
+        return SchemaRegistryConfig.fromProperties(properties, "");
     }
 
     private String requireProperty(String key) {

@@ -350,6 +350,10 @@ class Type2DimensionTransformerTest {
                 BUFFER_1,
                 "cdc",
                 null,
+                null,
+                null,
+                null,
+                null,
                 null);
         Type1WriteIdentity type1WriteIdentity = new Type1WriteIdentity(
                 "test-instance",
@@ -364,6 +368,10 @@ class Type2DimensionTransformerTest {
                 "job-1",
                 BUFFER_1,
                 "cdc",
+                null,
+                null,
+                null,
+                null,
                 null,
                 null);
 
@@ -431,6 +439,10 @@ class Type2DimensionTransformerTest {
                 BUFFER_1,
                 null,
                 null,
+                null,
+                null,
+                null,
+                null,
                 null);
         Type1WriteIdentity type1WriteIdentity = new Type1WriteIdentity(
                 "test-instance",
@@ -444,6 +456,10 @@ class Type2DimensionTransformerTest {
                 null,
                 null,
                 BUFFER_1,
+                null,
+                null,
+                null,
+                null,
                 null,
                 null,
                 null);

@@ -21,4 +21,8 @@ public record FileFlushNotification(
         @JsonProperty("source_database_name") String sourceDatabaseName,
         @JsonProperty("source_schema_name") String sourceSchemaName,
         @JsonProperty("source_table_name") String sourceTableName,
-        @JsonProperty("warehouse_path") String warehousePath) {}
+        @JsonProperty("warehouse_path") String warehousePath,
+        @JsonProperty("key_schema") String keySchema,
+        @JsonProperty("value_schema") String valueSchema,
+        @JsonProperty("key_schema_id") String keySchemaId,
+        @JsonProperty("value_schema_id") String valueSchemaId) {}

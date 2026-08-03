@@ -45,6 +45,10 @@ class FileFlushNotificationTest {
         assertEquals(SOURCE_SCHEMA, json.get("source_schema_name").asText());
         assertEquals(SOURCE_TABLE, json.get("source_table_name").asText());
         assertEquals(WAREHOUSE_PATH, json.get("warehouse_path").asText());
+        assertEquals(true, json.get("key_schema").isNull());
+        assertEquals(true, json.get("value_schema").isNull());
+        assertEquals(true, json.get("key_schema_id").isNull());
+        assertEquals(true, json.get("value_schema_id").isNull());
     }
 
     @Test
@@ -102,6 +106,10 @@ class FileFlushNotificationTest {
                 SOURCE_DATABASE,
                 SOURCE_SCHEMA,
                 SOURCE_TABLE,
-                WAREHOUSE_PATH);
+                WAREHOUSE_PATH,
+                null,
+                null,
+                null,
+                null);
     }
 }

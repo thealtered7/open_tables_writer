@@ -228,4 +228,7 @@ flowchart LR
 - Repoint [`SparkSessionFactory`](src/main/java/com/thealtered7/SparkSessionFactory.java) from
   the Hadoop catalog to the Polaris REST catalog; keep the Hadoop catalog for tests.
 - Add a Glue sync for Athena read access.
-- Choose and wire a schema registry (Glue SR or Apicurio) for the raw CDC topics.
+- DONE (notification bus): Confluent HTTP Schema Registry for `cdc-file-write` and
+  `open-table-write-notifications` via pluggable `schema.registry.type`
+  (`none`|`confluent`|`glue` stub). Raw CDC row payloads remain file-based JSONL;
+  optionally wire Glue SR (or consume Connect Avro `geo.*` topics) later.

@@ -94,7 +94,11 @@ class DatapipelinesHttpClientTest {
                 null,
                 null,
                 "/opt/data/icebergtable",
-                new KafkaWriteContext("cdc-file-write", 2, 42L));
+                new KafkaWriteContext("cdc-file-write", 2, 42L),
+                "{\"type\":\"struct\",\"fields\":[]}",
+                "{\"type\":\"struct\",\"name\":\"envelope\"}",
+                "1",
+                "2");
     }
 
     private static TableWriteRegistration sampleType1Registration() {
@@ -119,7 +123,11 @@ class DatapipelinesHttpClientTest {
                 Instant.parse("2026-05-31T02:53:00Z"),
                 Instant.parse("2026-05-31T02:53:05Z"),
                 "/opt/data/silver",
-                new KafkaWriteContext("open-table-write-notifications", 1, 7L));
+                new KafkaWriteContext("open-table-write-notifications", 1, 7L),
+                null,
+                null,
+                null,
+                null);
     }
 
     private static TableWriteRegistration sampleType2Registration() {
@@ -144,7 +152,11 @@ class DatapipelinesHttpClientTest {
                 Instant.parse("2026-05-31T02:53:00Z"),
                 Instant.parse("2026-05-31T02:53:05Z"),
                 "/opt/data/silver",
-                new KafkaWriteContext("open-table-write-notifications", 1, 7L));
+                new KafkaWriteContext("open-table-write-notifications", 1, 7L),
+                null,
+                null,
+                null,
+                null);
     }
 
     @Test
@@ -193,6 +205,10 @@ class DatapipelinesHttpClientTest {
         assertEquals(2, body.get("kafka_partition").asInt());
         assertEquals(42L, body.get("kafka_offset").asLong());
         assertEquals("/opt/data/icebergtable", body.get("warehouse_path").asText());
+        assertEquals("{\"type\":\"struct\",\"fields\":[]}", body.get("key_schema").asText());
+        assertEquals("{\"type\":\"struct\",\"name\":\"envelope\"}", body.get("value_schema").asText());
+        assertEquals("1", body.get("key_schema_id").asText());
+        assertEquals("2", body.get("value_schema_id").asText());
     }
 
     @Test
@@ -269,6 +285,10 @@ class DatapipelinesHttpClientTest {
                 null,
                 null,
                 null,
+                null,
+                null,
+                null,
+                null,
                 null));
 
         JsonNode body = MAPPER.readTree(capturedBody.get());
@@ -277,6 +297,10 @@ class DatapipelinesHttpClientTest {
         assertNull(body.get("kafka_offset"));
         assertNull(body.get("warehouse_path"));
         assertNull(body.get("merge_row_count"));
+        assertNull(body.get("key_schema"));
+        assertNull(body.get("value_schema"));
+        assertNull(body.get("key_schema_id"));
+        assertNull(body.get("value_schema_id"));
     }
 
     @Test

@@ -28,7 +28,11 @@ public record TableUpdatedNotification(
         @JsonProperty("extract_buffer_id") String extractBufferId,
         @JsonProperty("extract_type") String extractType,
         @JsonProperty("extract_start_at") Instant extractStartAt,
-        @JsonProperty("extract_end_at") Instant extractEndAt) {
+        @JsonProperty("extract_end_at") Instant extractEndAt,
+        @JsonProperty("key_schema") String keySchema,
+        @JsonProperty("value_schema") String valueSchema,
+        @JsonProperty("key_schema_id") String keySchemaId,
+        @JsonProperty("value_schema_id") String valueSchemaId) {
 
     public enum OpenTableFormat {
         ICEBERG,

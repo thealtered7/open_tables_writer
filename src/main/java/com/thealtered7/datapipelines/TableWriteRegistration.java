@@ -27,7 +27,11 @@ public record TableWriteRegistration(
         Instant mergeStartAt,
         Instant mergeEndAt,
         String warehousePath,
-        KafkaWriteContext kafka) {
+        KafkaWriteContext kafka,
+        String keySchema,
+        String valueSchema,
+        String keySchemaId,
+        String valueSchemaId) {
 
     public static final String WRITE_TYPE_BRONZE = "bronze";
     public static final String WRITE_TYPE_SILVER_TYPE_1 = "silver_type_1";

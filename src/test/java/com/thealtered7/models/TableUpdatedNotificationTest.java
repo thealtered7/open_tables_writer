@@ -60,6 +60,10 @@ class TableUpdatedNotificationTest {
         assertEquals(EXTRACT_TYPE, json.get("extract_type").asText());
         assertEquals(EXTRACT_START_AT.toString(), json.get("extract_start_at").asText());
         assertEquals(EXTRACT_END_AT.toString(), json.get("extract_end_at").asText());
+        assertEquals(true, json.get("key_schema").isNull());
+        assertEquals(true, json.get("value_schema").isNull());
+        assertEquals(true, json.get("key_schema_id").isNull());
+        assertEquals(true, json.get("value_schema_id").isNull());
     }
 
     @Test
@@ -134,6 +138,10 @@ class TableUpdatedNotificationTest {
                 EXTRACT_BUFFER_ID,
                 EXTRACT_TYPE,
                 EXTRACT_START_AT,
-                EXTRACT_END_AT);
+                EXTRACT_END_AT,
+                null,
+                null,
+                null,
+                null);
     }
 }

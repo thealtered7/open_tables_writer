@@ -160,7 +160,11 @@ public class IcebergTableWriter implements TableWriter {
                     null,
                     null,
                     dataDirectoryBasePath.toAbsolutePath().toString(),
-                    kafka));
+                    kafka,
+                    flush.keySchema(),
+                    flush.valueSchema(),
+                    flush.keySchemaId(),
+                    flush.valueSchemaId()));
         } catch (RuntimeException e) {
             log.error("Failed to register bronze iceberg table write for {}", tableFQN, e);
         }

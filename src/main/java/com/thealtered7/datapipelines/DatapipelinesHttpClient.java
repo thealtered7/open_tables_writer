@@ -131,7 +131,11 @@ public final class DatapipelinesHttpClient implements DatapipelinesClient {
                 registration.extractEndAt(),
                 registration.mergeStartAt(),
                 registration.mergeEndAt(),
-                registration.warehousePath());
+                registration.warehousePath(),
+                registration.keySchema(),
+                registration.valueSchema(),
+                registration.keySchemaId(),
+                registration.valueSchemaId());
     }
 
     private void post(String operation, String tableName, Object requestBody) {

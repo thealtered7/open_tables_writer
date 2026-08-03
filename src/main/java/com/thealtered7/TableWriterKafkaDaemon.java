@@ -1,15 +1,14 @@
 package com.thealtered7;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.thealtered7.datapipelines.DatapipelinesClient;
 import com.thealtered7.datapipelines.DatapipelinesHttpClient;
 import com.thealtered7.datapipelines.KafkaWriteContext;
 import com.thealtered7.datapipelines.TableWriteRegistration;
 import com.thealtered7.models.FileFlushNotification;
-import com.thealtered7.models.FileFlushNotificationJson;
 import com.thealtered7.models.TableUpdatedNotification;
 import com.thealtered7.observability.Observability;
 import com.thealtered7.observability.ObservabilityFactory;
+import com.thealtered7.schemaregistry.SchemaAwareKafka;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collections;
@@ -17,13 +16,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.spark.sql.SparkSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,7 +28,6 @@ import org.slf4j.LoggerFactory;
 public class TableWriterKafkaDaemon {
 
     private static final Logger log = LoggerFactory.getLogger(TableWriterKafkaDaemon.class);
-    private static final ObjectMapper OBJECT_MAPPER = FileFlushNotificationJson.MAPPER;
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(1000);
 
     private final BiFunction<Observability, DatapipelinesClient, ? extends TableWriter> writerFactory;
@@ -60,9 +56,12 @@ public class TableWriterKafkaDaemon {
                 observability);
         TableWriter writer = writerFactory.apply(observability, datapipelinesClient);
         SparkSession spark = sparkSessionFactory.apply(dataDirectoryBasePath);
-        KafkaConsumer<String, String> consumer = createConsumer(config);
+        KafkaConsumer<String, FileFlushNotification> consumer = createConsumer(config);
         TableUpdatedNotificationPublisher publisher = new TableUpdatedNotificationPublisher(
-                config.bootstrapServers(), config.clientId(), config.writeNotificationsTopic());
+                config.bootstrapServers(),
+                config.clientId(),
+                config.writeNotificationsTopic(),
+                config.schemaRegistryConfig());
         AtomicBoolean running = new AtomicBoolean(true);
 
         Thread shutdownHook = new Thread(() -> {
@@ -72,18 +71,19 @@ public class TableWriterKafkaDaemon {
         Runtime.getRuntime().addShutdownHook(shutdownHook);
 
         log.info(
-                "Starting Kafka consumer: topic={}, group={}, client={}",
+                "Starting Kafka consumer: topic={}, group={}, client={}, schemaRegistry={}",
                 config.topic(),
                 config.groupId(),
-                config.clientId());
+                config.clientId(),
+                config.schemaRegistryConfig().backend());
 
         try {
             consumer.subscribe(Collections.singletonList(config.topic()));
             while (running.get()) {
                 observability.observeOperationVoid(Observability.PREFIX, "poll", () -> {
-                    ConsumerRecords<String, String> records = consumer.poll(POLL_TIMEOUT);
+                    ConsumerRecords<String, FileFlushNotification> records = consumer.poll(POLL_TIMEOUT);
                     observability.lowCardinalityTag("record_count", String.valueOf(records.count()));
-                    for (ConsumerRecord<String, String> record : records) {
+                    for (ConsumerRecord<String, FileFlushNotification> record : records) {
                         processRecord(
                                 observability,
                                 config,
@@ -112,16 +112,13 @@ public class TableWriterKafkaDaemon {
         }
     }
 
-    private static KafkaConsumer<String, String> createConsumer(WriterConfigLoader config) {
-        var consumerProps = new java.util.Properties();
-        consumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, config.bootstrapServers());
-        consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, config.groupId());
-        consumerProps.put(ConsumerConfig.CLIENT_ID_CONFIG, config.clientId());
-        consumerProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        consumerProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        return new KafkaConsumer<>(consumerProps);
+    private static KafkaConsumer<String, FileFlushNotification> createConsumer(WriterConfigLoader config) {
+        return SchemaAwareKafka.createConsumer(
+                config.bootstrapServers(),
+                config.groupId(),
+                config.clientId(),
+                config.schemaRegistryConfig(),
+                FileFlushNotification.class);
     }
 
     private static void processRecord(
@@ -130,9 +127,9 @@ public class TableWriterKafkaDaemon {
             TableWriter writer,
             SparkSession spark,
             Path dataDirectoryBasePath,
-            KafkaConsumer<String, String> consumer,
+            KafkaConsumer<String, FileFlushNotification> consumer,
             TableUpdatedNotificationPublisher publisher,
-            ConsumerRecord<String, String> record) {
+            ConsumerRecord<String, FileFlushNotification> record) {
         try {
             observability.observeCallableVoid(
                     Observability.PREFIX,
@@ -142,8 +139,16 @@ public class TableWriterKafkaDaemon {
                             "partition", String.valueOf(record.partition()),
                             "offset", String.valueOf(record.offset())),
                     () -> {
-                        FileFlushNotification notification =
-                                OBJECT_MAPPER.readValue(record.value(), FileFlushNotification.class);
+                        FileFlushNotification notification = record.value();
+                        if (notification == null) {
+                            log.warn(
+                                    "Skipping null flush notification at topic={}, partition={}, offset={}",
+                                    record.topic(),
+                                    record.partition(),
+                                    record.offset());
+                            commitOffset(consumer, record);
+                            return "null_value";
+                        }
                         observability.lowCardinalityTag("table", notification.tableName());
                         log.info(
                                 "Processing flush notification: rawFilePath={}, tableName={}, extractJobId={}, extractEndAt={}",
@@ -228,11 +233,17 @@ public class TableWriterKafkaDaemon {
                 source.extractBufferId(),
                 source.extractType(),
                 source.extractStartAt(),
-                source.extractEndAt());
+                source.extractEndAt(),
+                source.keySchema(),
+                source.valueSchema(),
+                source.keySchemaId(),
+                source.valueSchemaId());
         publisher.publish(notification);
     }
 
-    private static void commitOffset(KafkaConsumer<String, String> consumer, ConsumerRecord<String, String> record) {
+    private static void commitOffset(
+            KafkaConsumer<String, FileFlushNotification> consumer,
+            ConsumerRecord<String, FileFlushNotification> record) {
         consumer.commitSync(Collections.singletonMap(
                 new TopicPartition(record.topic(), record.partition()),
                 new OffsetAndMetadata(record.offset() + 1)));

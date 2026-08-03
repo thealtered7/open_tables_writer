@@ -115,7 +115,7 @@ run-delta-table-writer-docker: build-docker
 
 run-iceberg-table-writer-docker: build-docker
 	@mkdir -p $(DATA_DIR) $(RAW_DATA_DIR)
-	docker run -d --rm --name iceberg-table-writer \
+	docker run --rm -d --name iceberg-table-writer \
 		--network $(STREAMING_NETWORK) \
 		-v $(DATA_DIR):/opt/data \
 		-v $(CONFIG_DIR):/config:ro \

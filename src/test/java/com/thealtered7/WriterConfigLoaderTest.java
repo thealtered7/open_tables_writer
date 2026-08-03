@@ -1,5 +1,6 @@
 package com.thealtered7;
 
+import com.thealtered7.schemaregistry.SchemaRegistryBackend;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -115,6 +116,32 @@ class WriterConfigLoaderTest {
         assertEquals("", config.datapipelinesBaseUrl());
         assertEquals("lakehouse", config.datapipelinesCatalogName());
         assertFalse(config.datapipelinesJwtEnabled());
+    }
+
+    @Test
+    void readsSchemaRegistryProperties(@TempDir Path tempDir) throws IOException {
+        Path common = tempDir.resolve("common.properties");
+        Path writer = tempDir.resolve("writer.properties");
+        Files.writeString(
+                common,
+                """
+                kafka.bootstrap.servers=kafka:9092
+                kafka.topic=cdc-file-write
+                schema.registry.type=confluent
+                schema.registry.url=http://schema-registry:8081
+                """);
+        Files.writeString(
+                writer,
+                """
+                kafka.client.id=iceberg-table-writer
+                kafka.group.id=iceberg-table-writer
+                data.directory.base.path=/opt/data/icebergtable
+                """);
+
+        WriterConfigLoader config = WriterConfigLoader.loadFromPaths(common, writer);
+
+        assertEquals(SchemaRegistryBackend.CONFLUENT, config.schemaRegistryConfig().backend());
+        assertEquals("http://schema-registry:8081", config.schemaRegistryConfig().url());
     }
 
     @Test

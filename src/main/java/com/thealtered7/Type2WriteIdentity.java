@@ -21,7 +21,11 @@ public record Type2WriteIdentity(
         String extractBufferId,
         String extractType,
         Instant extractStartAt,
-        Instant extractEndAt) {
+        Instant extractEndAt,
+        String keySchema,
+        String valueSchema,
+        String keySchemaId,
+        String valueSchemaId) {
 
     public static String getWriteNamespace(String bronzeNamespace) {
         return OpenTableNamespaces.silverFromBronze(bronzeNamespace);
@@ -48,7 +52,11 @@ public record Type2WriteIdentity(
                 notification.extractBufferId(),
                 notification.extractType(),
                 notification.extractStartAt(),
-                notification.extractEndAt());
+                notification.extractEndAt(),
+                notification.keySchema(),
+                notification.valueSchema(),
+                notification.keySchemaId(),
+                notification.valueSchemaId());
     }
 
     public boolean isComplete() {

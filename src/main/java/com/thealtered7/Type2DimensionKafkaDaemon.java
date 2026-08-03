@@ -1,24 +1,21 @@
 package com.thealtered7;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.thealtered7.datapipelines.DatapipelinesClient;
 import com.thealtered7.datapipelines.DatapipelinesHttpClient;
 import com.thealtered7.datapipelines.KafkaWriteContext;
 import com.thealtered7.models.TableUpdatedNotification;
-import com.thealtered7.models.TableUpdatedNotificationJson;
 import com.thealtered7.observability.Observability;
 import com.thealtered7.observability.ObservabilityFactory;
+import com.thealtered7.schemaregistry.SchemaAwareKafka;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.spark.sql.SparkSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,7 +23,6 @@ import org.slf4j.LoggerFactory;
 public class Type2DimensionKafkaDaemon {
 
     private static final Logger log = LoggerFactory.getLogger(Type2DimensionKafkaDaemon.class);
-    private static final ObjectMapper OBJECT_MAPPER = TableUpdatedNotificationJson.MAPPER;
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(1000);
     private static final String LOCAL_CATALOG_WAREHOUSE = "spark.sql.catalog.local_catalog.warehouse";
 
@@ -48,7 +44,7 @@ public class Type2DimensionKafkaDaemon {
                 observability);
         Type2DimensionTransformer transformer =
                 new Type2DimensionTransformer(observability, datapipelinesClient);
-        KafkaConsumer<String, String> consumer = createConsumer(config);
+        KafkaConsumer<String, TableUpdatedNotification> consumer = createConsumer(config);
         java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
 
         Thread shutdownHook = new Thread(() -> {
@@ -58,18 +54,19 @@ public class Type2DimensionKafkaDaemon {
         Runtime.getRuntime().addShutdownHook(shutdownHook);
 
         log.info(
-                "Starting Kafka consumer: topic={}, group={}, client={}",
+                "Starting Kafka consumer: topic={}, group={}, client={}, schemaRegistry={}",
                 config.topic(),
                 config.groupId(),
-                config.clientId());
+                config.clientId(),
+                config.schemaRegistryConfig().backend());
 
         try {
             consumer.subscribe(Collections.singletonList(config.topic()));
             while (running.get()) {
                 observability.observeOperationVoid(Observability.TYPE2_DIMENSION_KAFKA_PREFIX, "poll", () -> {
-                    ConsumerRecords<String, String> records = consumer.poll(POLL_TIMEOUT);
+                    ConsumerRecords<String, TableUpdatedNotification> records = consumer.poll(POLL_TIMEOUT);
                     observability.lowCardinalityTag("record_count", String.valueOf(records.count()));
-                    for (ConsumerRecord<String, String> record : records) {
+                    for (ConsumerRecord<String, TableUpdatedNotification> record : records) {
                         processRecord(observability, transformer, spark, silverWarehouse, consumer, record);
                     }
                     return records.isEmpty() ? "empty" : "success";
@@ -89,16 +86,13 @@ public class Type2DimensionKafkaDaemon {
         }
     }
 
-    private static KafkaConsumer<String, String> createConsumer(Type2DimensionConfigLoader config) {
-        var consumerProps = new java.util.Properties();
-        consumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, config.bootstrapServers());
-        consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, config.groupId());
-        consumerProps.put(ConsumerConfig.CLIENT_ID_CONFIG, config.clientId());
-        consumerProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        consumerProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-        consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        return new KafkaConsumer<>(consumerProps);
+    private static KafkaConsumer<String, TableUpdatedNotification> createConsumer(Type2DimensionConfigLoader config) {
+        return SchemaAwareKafka.createConsumer(
+                config.bootstrapServers(),
+                config.groupId(),
+                config.clientId(),
+                config.schemaRegistryConfig(),
+                TableUpdatedNotification.class);
     }
 
     private static void processRecord(
@@ -106,8 +100,8 @@ public class Type2DimensionKafkaDaemon {
             Type2DimensionTransformer transformer,
             SparkSession spark,
             Path silverWarehouse,
-            KafkaConsumer<String, String> consumer,
-            ConsumerRecord<String, String> record) {
+            KafkaConsumer<String, TableUpdatedNotification> consumer,
+            ConsumerRecord<String, TableUpdatedNotification> record) {
         try {
             observability.observeCallableVoid(
                     Observability.TYPE2_DIMENSION_KAFKA_PREFIX,
@@ -117,8 +111,16 @@ public class Type2DimensionKafkaDaemon {
                             "partition", String.valueOf(record.partition()),
                             "offset", String.valueOf(record.offset())),
                     () -> {
-                        TableUpdatedNotification notification =
-                                OBJECT_MAPPER.readValue(record.value(), TableUpdatedNotification.class);
+                        TableUpdatedNotification notification = record.value();
+                        if (notification == null) {
+                            log.warn(
+                                    "Skipping null table-updated notification at topic={}, partition={}, offset={}",
+                                    record.topic(),
+                                    record.partition(),
+                                    record.offset());
+                            commitOffset(consumer, record);
+                            return "null_value";
+                        }
                         observability.lowCardinalityTag("table", notification.tableFqn());
                         log.info(
                                 "Processing table-updated notification: table_fqn={}, format={}, table_path={}, extract_job_id={}",
@@ -152,10 +154,12 @@ public class Type2DimensionKafkaDaemon {
         Path tablePath = Path.of(notification.tablePath());
         IcebergTableIdentity identity = IcebergTableIdentity.fromTablePath(tablePath);
         spark.conf().set(LOCAL_CATALOG_WAREHOUSE, identity.getWarehouse().toAbsolutePath().toString());
-        return new IcebergType2TableAccess(identity, silverWarehouse);                
+        return new IcebergType2TableAccess(identity, silverWarehouse);
     }
 
-    private static void commitOffset(KafkaConsumer<String, String> consumer, ConsumerRecord<String, String> record) {
+    private static void commitOffset(
+            KafkaConsumer<String, TableUpdatedNotification> consumer,
+            ConsumerRecord<String, TableUpdatedNotification> record) {
         consumer.commitSync(Collections.singletonMap(
                 new TopicPartition(record.topic(), record.partition()),
                 new OffsetAndMetadata(record.offset() + 1)));

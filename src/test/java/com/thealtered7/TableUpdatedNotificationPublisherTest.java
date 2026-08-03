@@ -46,6 +46,10 @@ class TableUpdatedNotificationPublisherTest {
                 extractBufferId,
                 "cdc",
                 Instant.parse("2026-05-31T02:50:21Z"),
-                Instant.parse("2026-05-31T02:51:21Z"));
+                Instant.parse("2026-05-31T02:51:21Z"),
+                null,
+                null,
+                null,
+                null);
     }
 }

@@ -236,7 +236,11 @@ class IcebergTableWriterTest {
                 sourceDatabaseName,
                 sourceSchemaName,
                 sourceTableName,
-                "/opt/data/raw/");
+                "/opt/data/raw/",
+                null,
+                null,
+                null,
+                null);
     }
 
     private static String invokeGetTableFqn(IcebergTableWriter writer, Path inputFile) {

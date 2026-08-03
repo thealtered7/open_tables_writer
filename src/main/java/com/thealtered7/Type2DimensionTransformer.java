@@ -447,7 +447,11 @@ public class Type2DimensionTransformer {
                     mergeStartAt,
                     mergeEndAt,
                     access.warehousePath(),
-                    kafka));
+                    kafka,
+                    writeIdentity.keySchema(),
+                    writeIdentity.valueSchema(),
+                    writeIdentity.keySchemaId(),
+                    writeIdentity.valueSchemaId()));
         } catch (RuntimeException e) {
             log.error("Failed to register type-2 table write for {}", access.tableFqn(), e);
         }
@@ -491,7 +495,11 @@ public class Type2DimensionTransformer {
                     mergeStartAt,
                     mergeEndAt,
                     access.warehousePath(),
-                    kafka));
+                    kafka,
+                    writeIdentity.keySchema(),
+                    writeIdentity.valueSchema(),
+                    writeIdentity.keySchemaId(),
+                    writeIdentity.valueSchemaId()));
         } catch (RuntimeException e) {
             log.error("Failed to register type-1 table write for {}", access.tableFqn(), e);
         }
@@ -541,7 +549,24 @@ public class Type2DimensionTransformer {
 
     private static Type2WriteIdentity bufferScopedIdentity(String extractBufferId) {
         return new Type2WriteIdentity(
-                null, null, null, null, null, null, null, null, null, null, extractBufferId, null, null, null);
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                extractBufferId,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null);
     }
 
     private static boolean isPresent(String value) {
