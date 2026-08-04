@@ -232,3 +232,7 @@ flowchart LR
   `open-table-write-notifications` via pluggable `schema.registry.type`
   (`none`|`confluent`|`glue` stub). Raw CDC row payloads remain file-based JSONL;
   optionally wire Glue SR (or consume Connect Avro `geo.*` topics) later.
+- DONE (lakehouse schema drift): bronze/silver evolve from Connect `value_schema` + inferred
+  DataFrame schema (add columns with optional Connect defaults; soft-keep deleted columns;
+  coerce decimal/string/timestamp widenings; hard-fail other type changes). Renames appear as
+  drop+add. Per-pipeline Kafka DLQ topics via `kafka.dlq.topic`.

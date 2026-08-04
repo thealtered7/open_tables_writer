@@ -36,6 +36,7 @@ class WriterConfigLoaderTest {
 
         assertEquals("kafka:9092", config.bootstrapServers());
         assertEquals("cdc-file-write", config.topic());
+        assertEquals("cdc-file-write.dlq", config.dlqTopic());
         assertEquals("delta-table-writer", config.clientId());
         assertEquals("delta-table-writer", config.groupId());
         assertEquals("/opt/data/deltatable", config.dataDirectoryBasePath());

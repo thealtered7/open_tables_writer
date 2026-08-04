@@ -62,6 +62,11 @@ public class TableWriterKafkaDaemon {
                 config.clientId(),
                 config.writeNotificationsTopic(),
                 config.schemaRegistryConfig());
+        DeadLetterPublisher deadLetterPublisher = new DeadLetterPublisher(
+                config.bootstrapServers(),
+                config.clientId(),
+                config.dlqTopic(),
+                config.schemaRegistryConfig());
         AtomicBoolean running = new AtomicBoolean(true);
 
         Thread shutdownHook = new Thread(() -> {
@@ -71,8 +76,9 @@ public class TableWriterKafkaDaemon {
         Runtime.getRuntime().addShutdownHook(shutdownHook);
 
         log.info(
-                "Starting Kafka consumer: topic={}, group={}, client={}, schemaRegistry={}",
+                "Starting Kafka consumer: topic={}, dlqTopic={}, group={}, client={}, schemaRegistry={}",
                 config.topic(),
+                config.dlqTopic(),
                 config.groupId(),
                 config.clientId(),
                 config.schemaRegistryConfig().backend());
@@ -92,6 +98,7 @@ public class TableWriterKafkaDaemon {
                                 dataDirectoryBasePath,
                                 consumer,
                                 publisher,
+                                deadLetterPublisher,
                                 record);
                     }
                     return records.isEmpty() ? "empty" : "success";
@@ -106,6 +113,7 @@ public class TableWriterKafkaDaemon {
             Runtime.getRuntime().removeShutdownHook(shutdownHook);
             consumer.close();
             publisher.close();
+            deadLetterPublisher.close();
             spark.stop();
             observabilityFactory.shutdown();
             log.info("Kafka consumer and Spark session stopped");
@@ -129,7 +137,12 @@ public class TableWriterKafkaDaemon {
             Path dataDirectoryBasePath,
             KafkaConsumer<String, FileFlushNotification> consumer,
             TableUpdatedNotificationPublisher publisher,
+            DeadLetterPublisher deadLetterPublisher,
             ConsumerRecord<String, FileFlushNotification> record) {
+        FileFlushNotification notification = record.value();
+        String extractJobId = notification == null ? null : notification.extractJobId();
+        String extractBufferId = notification == null ? null : notification.extractBufferId();
+        ExtractMdc.put(extractJobId, extractBufferId);
         try {
             observability.observeCallableVoid(
                     Observability.PREFIX,
@@ -137,9 +150,10 @@ public class TableWriterKafkaDaemon {
                     Map.of(
                             "topic", record.topic(),
                             "partition", String.valueOf(record.partition()),
-                            "offset", String.valueOf(record.offset())),
+                            "offset", String.valueOf(record.offset()),
+                            ExtractMdc.EXTRACT_JOB_ID, ExtractMdc.normalize(extractJobId),
+                            ExtractMdc.EXTRACT_BUFFER_ID, ExtractMdc.normalize(extractBufferId)),
                     () -> {
-                        FileFlushNotification notification = record.value();
                         if (notification == null) {
                             log.warn(
                                     "Skipping null flush notification at topic={}, partition={}, offset={}",
@@ -151,10 +165,11 @@ public class TableWriterKafkaDaemon {
                         }
                         observability.lowCardinalityTag("table", notification.tableName());
                         log.info(
-                                "Processing flush notification: rawFilePath={}, tableName={}, extractJobId={}, extractEndAt={}",
+                                "Processing flush notification: rawFilePath={}, tableName={}, extractJobId={}, extractBufferId={}, extractEndAt={}",
                                 notification.rawFilePath(),
                                 notification.tableName(),
                                 notification.extractJobId(),
+                                notification.extractBufferId(),
                                 notification.extractEndAt());
 
                         Path inputFilePath = Path.of(notification.rawFilePath());
@@ -195,6 +210,20 @@ public class TableWriterKafkaDaemon {
                     record.partition(),
                     record.offset(),
                     e);
+            try {
+                String tableIdentity = notification == null ? null : notification.tableName();
+                deadLetterPublisher.publish(record, e, extractJobId, extractBufferId, tableIdentity);
+                commitOffset(consumer, record);
+            } catch (RuntimeException dlqError) {
+                log.error(
+                        "Failed to publish dead-letter message; leaving offset uncommitted at {}:{}:{}",
+                        record.topic(),
+                        record.partition(),
+                        record.offset(),
+                        dlqError);
+            }
+        } finally {
+            ExtractMdc.clear();
         }
     }
 

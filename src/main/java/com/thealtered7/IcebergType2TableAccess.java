@@ -128,28 +128,32 @@ class IcebergType2TableAccess implements Type2TableAccess {
                 silverSqlTableName(), columnName, primaryKeyColumn, validFromColumn, columnName));
     }
 
-    private String silverCatalogTableName() {
+    @Override
+    public String silverCatalogTableName() {
         String[] parts = table.getTableFqn().split("\\.");
         String silverNamespace = OpenTableNamespaces.silverFromBronze(parts[1]);
         String silverTable = OpenTableNamespaces.type2Table(parts[2]);
         return String.format("silver_catalog.%s.%s.%s", parts[0], silverNamespace, silverTable);
     }
 
-    private String silverSqlTableName() {
+    @Override
+    public String silverSqlTableName() {
         String[] parts = table.getTableFqn().split("\\.");
         String silverNamespace = OpenTableNamespaces.silverFromBronze(parts[1]);
         String silverTable = OpenTableNamespaces.type2Table(parts[2]);
         return String.format("silver_catalog.`%s`.`%s`.`%s`", parts[0], silverNamespace, silverTable);
     }
 
-    private String type1CatalogTableName() {
+    @Override
+    public String type1CatalogTableName() {
         String[] parts = table.getTableFqn().split("\\.");
         String silverNamespace = OpenTableNamespaces.silverFromBronze(parts[1]);
         String type1Table = OpenTableNamespaces.type1Table(parts[2]);
         return String.format("silver_catalog.%s.%s.%s", parts[0], silverNamespace, type1Table);
     }
 
-    private String type1SqlTableName() {
+    @Override
+    public String type1SqlTableName() {
         String[] parts = table.getTableFqn().split("\\.");
         String silverNamespace = OpenTableNamespaces.silverFromBronze(parts[1]);
         String type1Table = OpenTableNamespaces.type1Table(parts[2]);

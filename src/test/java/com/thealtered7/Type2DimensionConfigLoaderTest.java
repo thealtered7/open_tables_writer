@@ -28,6 +28,7 @@ class Type2DimensionConfigLoaderTest {
         assertEquals("", config.datapipelinesBaseUrl());
         assertEquals("lakehouse", config.datapipelinesCatalogName());
         assertFalse(config.datapipelinesJwtEnabled());
+        assertEquals("open-table-write-notifications.dlq", config.dlqTopic());
     }
 
     @Test

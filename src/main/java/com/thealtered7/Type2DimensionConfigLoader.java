@@ -59,6 +59,10 @@ public final class Type2DimensionConfigLoader {
         return properties.getProperty("kafka.opentable.write.notifications", DEFAULT_NOTIFICATIONS_TOPIC);
     }
 
+    public String dlqTopic() {
+        return properties.getProperty("kafka.dlq.topic", topic() + ".dlq");
+    }
+
     public String clientId() {
         return requireProperty("kafka.client.id");
     }

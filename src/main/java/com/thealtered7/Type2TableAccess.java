@@ -37,4 +37,14 @@ interface Type2TableAccess {
     void addIsDeletedColumn(SparkSession spark, String columnName);
 
     void addVersionKeyColumn(SparkSession spark, String columnName, String primaryKeyColumn, String validFromColumn);
+
+    /** Spark catalog name used with {@code spark.table(...)} / {@code tableExists}. */
+    String silverCatalogTableName();
+
+    /** Backtick-quoted Spark SQL name for ALTER/MERGE DDL. */
+    String silverSqlTableName();
+
+    String type1CatalogTableName();
+
+    String type1SqlTableName();
 }

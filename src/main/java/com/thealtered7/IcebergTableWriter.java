@@ -6,8 +6,10 @@ import com.thealtered7.datapipelines.NoopDatapipelinesClient;
 import com.thealtered7.datapipelines.TableWriteRegistration;
 import com.thealtered7.models.FileFlushNotification;
 import com.thealtered7.observability.Observability;
+import com.thealtered7.schema.IcebergSchemaEvolver;
 import java.nio.file.Path;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
@@ -53,10 +55,17 @@ public class IcebergTableWriter implements TableWriter {
             FileFlushNotification flush) {
         String tableFQN = this.getTableFqn(inputFilePath);
         try {
+            Map<String, String> tags = new HashMap<>();
+            tags.put("table", tableFQN);
+            tags.put("input_file", inputFilePath.toString());
+            if (flush != null) {
+                tags.put(ExtractMdc.EXTRACT_JOB_ID, ExtractMdc.normalize(flush.extractJobId()));
+                tags.put(ExtractMdc.EXTRACT_BUFFER_ID, ExtractMdc.normalize(flush.extractBufferId()));
+            }
             observability.observeCallableVoid(
                     Observability.ICEBERG_TABLE_WRITER_PREFIX,
                     "write_to_table",
-                    Map.of("table", tableFQN, "input_file", inputFilePath.toString()),
+                    tags,
                     () -> {
                         writeToTableInternal(
                                 spark, inputFilePath, dataDirectoryBasePath, tableFQN, kafka, source, flush);
@@ -90,11 +99,21 @@ public class IcebergTableWriter implements TableWriter {
         Dataset<Row> partitioned = flattener.addDatePartitionColumns(withTimestamps, now);
         Path outputTablePath = flattener.getOutputTablePath(tableFQN, dataDirectoryBasePath);
         String catalogTable = toCatalogTableName(tableFQN);
+        String sqlTable = toSqlTableName(tableFQN);
         log.info("output table path: {}", outputTablePath);
         log.info("catalog table: {}", catalogTable);
 
-        partitioned.createOrReplaceTempView(INCOMING_VIEW);
-        long rowCount = partitioned.count();
+        String valueSchema = flush == null ? null : flush.valueSchema();
+        Dataset<Row> aligned = IcebergSchemaEvolver.evolveAndAlign(
+                spark,
+                catalogTable,
+                sqlTable,
+                partitioned,
+                valueSchema,
+                IcebergSchemaEvolver.LayerMode.BRONZE);
+
+        aligned.createOrReplaceTempView(INCOMING_VIEW);
+        long rowCount = aligned.count();
 
         if (!spark.catalog().tableExists(catalogTable)) {
             log.info("creating iceberg table {}", catalogTable);
@@ -105,7 +124,7 @@ public class IcebergTableWriter implements TableWriter {
                     PARTITIONED BY (_year, _month, _day)
                     AS SELECT * FROM %s
                     """,
-                    toSqlTableName(tableFQN),
+                    sqlTable,
                     INCOMING_VIEW));
         } else {
             log.info("appending to iceberg table {}", catalogTable);
@@ -114,7 +133,7 @@ public class IcebergTableWriter implements TableWriter {
                     INSERT INTO %s
                     SELECT * FROM %s
                     """,
-                    toSqlTableName(tableFQN),
+                    sqlTable,
                     INCOMING_VIEW));
         }
 

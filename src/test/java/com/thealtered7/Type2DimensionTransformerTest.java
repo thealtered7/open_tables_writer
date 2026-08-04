@@ -42,6 +42,11 @@ class Type2DimensionTransformerTest {
             {"extract":{"extract_job_id":"job-1","extract_buffer_id":"buf-2","extract_type":"cdc"},"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":1,"name":"scalar","value":1.04,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z"},"after":{"id":1,"name":"scalar","value":1.02,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T03:27:24.242870Z"},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194445244,"snapshot":"false","db":"geo","sequence":"[\\"32592000\\",\\"32592512\\"]","ts_us":1780194445244620,"ts_ns":1780194445244620000,"schema":"public","table":"scalars","txId":22180,"lsn":32592000,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"u","ts_ms":1780194445583,"ts_us":1780194445583639,"ts_ns":1780194445583639448}}
             """;
 
+    /** Same as V2 but adds business column absent from the prior silver Type2 schema. */
+    private static final String SAMPLE_JSON_LINE_NEW_COLUMN = """
+            {"extract":{"extract_job_id":"job-1","extract_buffer_id":"buf-2","extract_type":"cdc"},"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":1,"name":"scalar","value":1.04,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z","fart_not_nullable":null},"after":{"id":1,"name":"scalar","value":1.02,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T03:27:24.242870Z","fart_not_nullable":42},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194445244,"snapshot":"false","db":"geo","sequence":"[\\"32592000\\",\\"32592512\\"]","ts_us":1780194445244620,"ts_ns":1780194445244620000,"schema":"public","table":"scalars","txId":22180,"lsn":32592000,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"u","ts_ms":1780194445583,"ts_us":1780194445583639,"ts_ns":1780194445583639448}}
+            """;
+
     private static final String DELETE_JSON_LINE = """
             {"extract":{"extract_job_id":"job-1","extract_buffer_id":"buf-3","extract_type":"cdc"},"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":1,"name":"scalar","value":1.04,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z"},"after":null,"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780198044244,"snapshot":"false","db":"geo","sequence":"[\\"32592900\\",\\"32593000\\"]","ts_us":1780198044244620,"ts_ns":1780198044244620000,"schema":"public","table":"scalars","txId":22185,"lsn":32593000,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"d","ts_ms":1780198044583,"ts_us":1780198044583639,"ts_ns":1780198044583639448}}
             """;
@@ -512,6 +517,67 @@ class Type2DimensionTransformerTest {
         assertEquals("1-32592000", row.getAs("primary_key"));
         assertEquals(1.02, ((Number) row.getAs("value")).doubleValue(), 0.0001);
         assertFalse(row.getBoolean(row.fieldIndex("_is_deleted")));
+    }
+
+    @Test
+    void incrementalLoadAddsNewBusinessColumnWithoutUnresolvedColumn(@TempDir Path tempDir)
+            throws Exception {
+        TableIdentity table = writeBronzeTable(tempDir, SAMPLE_JSON_LINE);
+        new Type2DimensionTransformer().transform(spark, table, BUFFER_1);
+        assertFalse(Arrays.asList(spark.table(toSilverCatalogTable(table)).columns())
+                .contains("fart_not_nullable"));
+
+        Path inputFile = tempDir.resolve("geo.public.scalars-2026-06-01_02-14-58.jsonl");
+        Files.writeString(inputFile, SAMPLE_JSON_LINE_NEW_COLUMN);
+        new IcebergTableWriter().writeToTable(spark, inputFile, tempDir.resolve("bronze"));
+
+        assertDoesNotThrow(() -> new Type2DimensionTransformer().transform(spark, table, BUFFER_2));
+
+        Dataset<Row> silver = spark.table(toSilverCatalogTable(table));
+        assertTrue(Arrays.asList(silver.columns()).contains("fart_not_nullable"));
+        assertEquals(2L, silver.count());
+
+        Row closed = silver.filter("primary_key = '1-32591512'").first();
+        assertTrue(closed.isNullAt(closed.fieldIndex("fart_not_nullable")));
+
+        Row current = silver.filter("_is_current = true").first();
+        assertEquals(42, ((Number) current.getAs("fart_not_nullable")).intValue());
+    }
+
+    @Test
+    void selectAlignedToIncoming_nullFillsMissingColumns() {
+        spark = SparkSession.builder()
+                .master("local[1]")
+                .appName("selectAlignedToIncoming")
+                .config("spark.ui.enabled", "false")
+                .getOrCreate();
+
+        Dataset<Row> silver = spark.createDataFrame(
+                java.util.List.of(org.apache.spark.sql.RowFactory.create(1L, "a")),
+                new org.apache.spark.sql.types.StructType()
+                        .add("id", org.apache.spark.sql.types.DataTypes.LongType, false)
+                        .add("name", org.apache.spark.sql.types.DataTypes.StringType, true));
+        Dataset<Row> incoming = spark.createDataFrame(
+                java.util.List.of(org.apache.spark.sql.RowFactory.create(1L, "b", 42)),
+                new org.apache.spark.sql.types.StructType()
+                        .add("id", org.apache.spark.sql.types.DataTypes.LongType, false)
+                        .add("name", org.apache.spark.sql.types.DataTypes.StringType, true)
+                        .add(
+                                "fart_not_nullable",
+                                org.apache.spark.sql.types.DataTypes.IntegerType,
+                                true));
+
+        Dataset<Row> aligned = Type2DimensionTransformer.selectAlignedToIncoming(
+                silver, incoming, new String[] {"id", "name", "fart_not_nullable"});
+
+        assertDoesNotThrow(() -> aligned.unionByName(incoming).collect());
+        Row row = aligned.first();
+        assertEquals(1L, (long) row.getAs("id"));
+        assertEquals("a", row.getAs("name"));
+        assertTrue(row.isNullAt(row.fieldIndex("fart_not_nullable")));
+        assertEquals(
+                org.apache.spark.sql.types.DataTypes.IntegerType,
+                aligned.schema().apply("fart_not_nullable").dataType());
     }
 
     @Test

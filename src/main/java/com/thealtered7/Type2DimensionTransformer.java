@@ -6,6 +6,7 @@ import com.thealtered7.datapipelines.NoopDatapipelinesClient;
 import com.thealtered7.datapipelines.TableWriteRegistration;
 import com.thealtered7.models.TableUpdatedNotification.OpenTableFormat;
 import com.thealtered7.observability.Observability;
+import com.thealtered7.schema.IcebergSchemaEvolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,6 +26,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -117,10 +119,19 @@ public class Type2DimensionTransformer {
             Type2WriteIdentity type2WriteIdentity,
             Type1WriteIdentity type1WriteIdentity) {
         try {
+            Map<String, String> tags = new HashMap<>();
+            tags.put("table", access.tableFqn());
+            if (type2WriteIdentity != null) {
+                tags.put(ExtractMdc.EXTRACT_JOB_ID, ExtractMdc.normalize(type2WriteIdentity.extractJobId()));
+                tags.put(ExtractMdc.EXTRACT_BUFFER_ID, ExtractMdc.normalize(type2WriteIdentity.extractBufferId()));
+            } else if (type1WriteIdentity != null) {
+                tags.put(ExtractMdc.EXTRACT_JOB_ID, ExtractMdc.normalize(type1WriteIdentity.extractJobId()));
+                tags.put(ExtractMdc.EXTRACT_BUFFER_ID, ExtractMdc.normalize(type1WriteIdentity.extractBufferId()));
+            }
             observability.observeCallableVoid(
                     Observability.TYPE2_DIMENSION_TRANSFORMER_PREFIX,
                     "transform",
-                    Map.of("table", access.tableFqn()),
+                    tags,
                     () -> {
                         transformInternal(spark, access, kafka, type2WriteIdentity, type1WriteIdentity);
                         return "success";
@@ -201,7 +212,10 @@ public class Type2DimensionTransformer {
                                     .and(col(SOURCE_LSN_COLUMN).equalTo(col("incoming_lsn"))),
                             "left_anti");
             if (!currentSilver.isEmpty()) {
-                combined = combined.unionByName(currentSilver.select(toColumns(baseColumns)));
+                // Incoming may include columns not yet on silver (evolution runs in mergeIntoSilver).
+                // Null-fill so select/unionByName do not fail with UNRESOLVED_COLUMN.
+                combined = combined.unionByName(
+                        selectAlignedToIncoming(currentSilver, incoming, baseColumns));
             }
         }
 
@@ -345,9 +359,22 @@ public class Type2DimensionTransformer {
             KafkaWriteContext kafka,
             Type2WriteIdentity type2WriteIdentity,
             Type1WriteIdentity type1WriteIdentity) {
+        String valueSchema = type2WriteIdentity == null ? null : type2WriteIdentity.valueSchema();
+        if (access.silverExists(spark)) {
+            ensureIsDeletedColumn(spark, access);
+            ensureVersionKeyColumn(spark, access);
+        }
+        Dataset<Row> evolved = IcebergSchemaEvolver.evolveAndAlign(
+                spark,
+                access.silverCatalogTableName(),
+                access.silverSqlTableName(),
+                type2Rows,
+                valueSchema,
+                IcebergSchemaEvolver.LayerMode.SILVER);
+
         String stagingView = stagingViewName(access);
-        long rowCount = type2Rows.count();
-        type2Rows.createOrReplaceTempView(stagingView);
+        long rowCount = evolved.count();
+        evolved.createOrReplaceTempView(stagingView);
 
         try {
             Instant mergeStartAt = Instant.now();
@@ -355,15 +382,13 @@ public class Type2DimensionTransformer {
                 log.info("creating silver type-2 table {}", access.tableFqn());
                 access.createSilver(spark, stagingView);
             } else {
-                ensureIsDeletedColumn(spark, access);
-                ensureVersionKeyColumn(spark, access);
-                String updateSetClause = buildMergeUpdateSetClause(type2Rows.columns(), VERSION_KEY_COLUMN);
+                String updateSetClause = buildMergeUpdateSetClause(evolved.columns(), VERSION_KEY_COLUMN);
                 log.info("merging {} rows into {}", rowCount, access.tableFqn());
                 access.mergeSilver(spark, stagingView, VERSION_KEY_COLUMN, updateSetClause);
             }
             Instant mergeEndAt = Instant.now();
             registerType2Write(access, rowCount, kafka, type2WriteIdentity, mergeStartAt, mergeEndAt);
-            mergeIntoType1(spark, access, type2Rows, kafka, type1WriteIdentity);
+            mergeIntoType1(spark, access, evolved, kafka, type1WriteIdentity, valueSchema);
         } finally {
             spark.catalog().dropTempView(stagingView);
         }
@@ -374,7 +399,8 @@ public class Type2DimensionTransformer {
             Type2TableAccess access,
             Dataset<Row> type2Rows,
             KafkaWriteContext kafka,
-            Type1WriteIdentity type1WriteIdentity) {
+            Type1WriteIdentity type1WriteIdentity,
+            String valueSchema) {
         WindowSpec latestPerId = Window.partitionBy(ID_COLUMN).orderBy(col(SOURCE_LSN_COLUMN).desc());
         Dataset<Row> type1Rows = type2Rows
                 .filter(col(IS_CURRENT_COLUMN).or(col(IS_DELETED_COLUMN)))
@@ -388,9 +414,17 @@ public class Type2DimensionTransformer {
             return;
         }
 
+        Dataset<Row> evolvedType1 = IcebergSchemaEvolver.evolveAndAlign(
+                spark,
+                access.type1CatalogTableName(),
+                access.type1SqlTableName(),
+                type1Rows,
+                valueSchema,
+                IcebergSchemaEvolver.LayerMode.SILVER);
+
         String stagingView = type1StagingViewName(access);
-        long rowCount = type1Rows.count();
-        type1Rows.createOrReplaceTempView(stagingView);
+        long rowCount = evolvedType1.count();
+        evolvedType1.createOrReplaceTempView(stagingView);
 
         try {
             Instant mergeStartAt = Instant.now();
@@ -398,7 +432,7 @@ public class Type2DimensionTransformer {
                 log.info("creating silver type-1 table for {}", access.tableFqn());
                 access.createType1(spark, stagingView);
             } else {
-                String updateSetClause = buildMergeUpdateSetClause(type1Rows.columns(), ID_COLUMN);
+                String updateSetClause = buildMergeUpdateSetClause(evolvedType1.columns(), ID_COLUMN);
                 log.info("merging {} type-1 rows for {}", rowCount, access.tableFqn());
                 access.mergeType1(spark, stagingView, ID_COLUMN, updateSetClause);
             }
@@ -623,6 +657,23 @@ public class Type2DimensionTransformer {
         return Arrays.stream(incoming.columns())
                 .filter(name -> !TYPE2_COLUMNS.contains(name))
                 .toArray(String[]::new);
+    }
+
+    /**
+     * Projects {@code baseColumns} from {@code rows}, adding null-typed columns for any name present
+     * on {@code schemaSource} but missing from {@code rows} (incoming schema ahead of silver).
+     */
+    static Dataset<Row> selectAlignedToIncoming(
+            Dataset<Row> rows, Dataset<Row> schemaSource, String[] baseColumns) {
+        Set<String> present = Arrays.stream(rows.columns()).collect(Collectors.toSet());
+        Dataset<Row> aligned = rows;
+        for (String name : baseColumns) {
+            if (!present.contains(name)) {
+                aligned = aligned.withColumn(
+                        name, lit(null).cast(schemaSource.schema().apply(name).dataType()));
+            }
+        }
+        return aligned.select(toColumns(baseColumns));
     }
 
     private static Column[] toColumns(String[] columnNames) {

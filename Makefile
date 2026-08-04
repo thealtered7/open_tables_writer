@@ -16,10 +16,13 @@ DELTA_KAFKA_GROUP ?= delta-table-writer
 ICEBERG_KAFKA_GROUP ?= iceberg-table-writer
 NOTIFICATIONS_KAFKA_TOPIC ?= open-table-write-notifications
 TYPE2_KAFKA_GROUP ?= create-type2-dimension
+# Dead-letter topics (may not exist until the first failure)
+KAFKA_DLQ_TOPIC ?= $(KAFKA_TOPIC).dlq
+NOTIFICATIONS_KAFKA_DLQ_TOPIC ?= $(NOTIFICATIONS_KAFKA_TOPIC).dlq
 # Kafka topic administration (purge-kafka-topics)
 KAFKA_BOOTSTRAP ?= kafka:9092
 KAFKA_CLI_IMAGE ?= apache/kafka:latest
-KAFKA_TOPICS ?= $(KAFKA_TOPIC) $(NOTIFICATIONS_KAFKA_TOPIC)
+KAFKA_TOPICS ?= $(KAFKA_TOPIC) $(KAFKA_DLQ_TOPIC) $(NOTIFICATIONS_KAFKA_TOPIC) $(NOTIFICATIONS_KAFKA_DLQ_TOPIC)
 KAFKA_TOPIC_PARTITIONS ?= 1
 KAFKA_TOPIC_REPLICATION ?= 1
 # earliest = replay from start; latest = skip to end
@@ -212,6 +215,7 @@ reset-type2-notifications-kafka-offsets:
 # Runs the Kafka CLI in a one-shot container attached to the streaming Docker
 # network and connects to the broker at $(KAFKA_BOOTSTRAP).
 # Requires the streaming Kafka broker to be running on $(STREAMING_NETWORK).
+# Missing topics (e.g. DLQ topics never created) are ignored and do not fail the target.
 # Usage: make purge-kafka-topics
 #        make purge-kafka-topics KAFKA_TOPICS="cdc-file-write"
 purge-kafka-topics:
@@ -221,7 +225,8 @@ purge-kafka-topics:
 		docker run --rm --network $(STREAMING_NETWORK) $(KAFKA_CLI_IMAGE) \
 			/opt/kafka/bin/kafka-topics.sh \
 			--bootstrap-server $(KAFKA_BOOTSTRAP) \
-			--delete --topic $$topic || true; \
+			--delete --topic $$topic \
+			|| echo "Topic $$topic did not exist or delete failed; continuing"; \
 		echo "Waiting for topic $$topic to be removed ..."; \
 		for i in $$(seq 1 30); do \
 			if docker run --rm --network $(STREAMING_NETWORK) $(KAFKA_CLI_IMAGE) \
@@ -239,8 +244,10 @@ purge-kafka-topics:
 			--bootstrap-server $(KAFKA_BOOTSTRAP) \
 			--create --topic $$topic \
 			--partitions $(KAFKA_TOPIC_PARTITIONS) \
-			--replication-factor $(KAFKA_TOPIC_REPLICATION); \
-	done
+			--replication-factor $(KAFKA_TOPIC_REPLICATION) \
+			|| echo "Create for $$topic failed (may already exist); continuing"; \
+	done; \
+	true
 
 start-daemons: run-iceberg-table-writer-docker run-create-type2-dimension-docker
 	
