@@ -7,6 +7,7 @@ import com.thealtered7.models.TableUpdatedNotification;
 import com.thealtered7.observability.Observability;
 import com.thealtered7.observability.ObservabilityFactory;
 import com.thealtered7.schemaregistry.SchemaAwareKafka;
+import com.thealtered7.schemaregistry.TableSchemaRegistrars;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collections;
@@ -42,8 +43,10 @@ public class Type2DimensionKafkaDaemon {
                 config.datapipelinesCatalogName(),
                 config.datapipelinesJwtEnabled(),
                 observability);
-        Type2DimensionTransformer transformer =
-                new Type2DimensionTransformer(observability, datapipelinesClient);
+        Type2DimensionTransformer transformer = new Type2DimensionTransformer(
+                observability,
+                datapipelinesClient,
+                TableSchemaRegistrars.create(config.schemaRegistryConfig()));
         KafkaConsumer<String, TableUpdatedNotification> consumer = createConsumer(config);
         DeadLetterPublisher deadLetterPublisher = new DeadLetterPublisher(
                 config.bootstrapServers(),

@@ -7,6 +7,10 @@ import com.thealtered7.datapipelines.TableWriteRegistration;
 import com.thealtered7.models.FileFlushNotification;
 import com.thealtered7.observability.Observability;
 import com.thealtered7.schema.IcebergSchemaEvolver;
+import com.thealtered7.schemaregistry.TableSchemaRegistrar;
+import com.thealtered7.schemaregistry.TableSchemaRegistrars;
+import com.thealtered7.schemaregistry.TableSchemaSubjects;
+import com.thealtered7.schemaregistry.SchemaRegistryConfig;
 import java.nio.file.Path;
 import java.util.Date;
 import java.util.HashMap;
@@ -26,6 +30,7 @@ public class IcebergTableWriter implements TableWriter {
 
     private final Observability observability;
     private final DatapipelinesClient datapipelinesClient;
+    private final TableSchemaRegistrar tableSchemaRegistrar;
 
     public IcebergTableWriter() {
         this(Observability.noop());
@@ -36,8 +41,17 @@ public class IcebergTableWriter implements TableWriter {
     }
 
     public IcebergTableWriter(Observability observability, DatapipelinesClient datapipelinesClient) {
+        this(observability, datapipelinesClient, TableSchemaRegistrars.create(SchemaRegistryConfig.none()));
+    }
+
+    public IcebergTableWriter(
+            Observability observability,
+            DatapipelinesClient datapipelinesClient,
+            TableSchemaRegistrar tableSchemaRegistrar) {
         this.observability = Objects.requireNonNull(observability, "observability");
         this.datapipelinesClient = Objects.requireNonNull(datapipelinesClient, "datapipelinesClient");
+        this.tableSchemaRegistrar =
+                Objects.requireNonNull(tableSchemaRegistrar, "tableSchemaRegistrar");
     }
 
     private String getTableFqn(Path inputFilePath) {
@@ -137,7 +151,26 @@ public class IcebergTableWriter implements TableWriter {
                     INCOMING_VIEW));
         }
 
-        registerBronzeWrite(tableFQN, rowCount, dataDirectoryBasePath, kafka, source, flush);
+        spark.catalog().refreshTable(catalogTable);
+        String tableSchemaJson = spark.table(catalogTable).schema().json();
+        String tableSchemaId = null;
+        if (source != null && source.isComplete()) {
+            String schemaSubject = TableSchemaSubjects.valueSubject(
+                    source.databaseName(),
+                    OpenTableNamespaces.bronze(source.schemaName()),
+                    source.tableName());
+            tableSchemaId = tableSchemaRegistrar.register(schemaSubject, tableSchemaJson);
+        }
+
+        registerBronzeWrite(
+                tableFQN,
+                rowCount,
+                dataDirectoryBasePath,
+                kafka,
+                source,
+                flush,
+                tableSchemaJson,
+                tableSchemaId);
     }
 
     private void registerBronzeWrite(
@@ -146,7 +179,9 @@ public class IcebergTableWriter implements TableWriter {
             Path dataDirectoryBasePath,
             KafkaWriteContext kafka,
             SourceTableIdentity source,
-            FileFlushNotification flush) {
+            FileFlushNotification flush,
+            String tableSchemaJson,
+            String tableSchemaId) {
         if (source == null || !source.isComplete()) {
             log.warn("Skipping datapipelines registration; missing source identity for {}", tableFQN);
             return;
@@ -180,10 +215,12 @@ public class IcebergTableWriter implements TableWriter {
                     null,
                     dataDirectoryBasePath.toAbsolutePath().toString(),
                     kafka,
-                    flush.keySchema(),
-                    flush.valueSchema(),
-                    flush.keySchemaId(),
-                    flush.valueSchemaId()));
+                    null,
+                    tableSchemaJson,
+                    null,
+                    tableSchemaId,
+                    flush.sourceMinLsn(),
+                    flush.sourceMaxLsn()));
         } catch (RuntimeException e) {
             log.error("Failed to register bronze iceberg table write for {}", tableFQN, e);
         }
@@ -206,7 +243,7 @@ public class IcebergTableWriter implements TableWriter {
 
     public static void main(String[] args) {
         new TableWriterKafkaDaemon(
-                        (obs, client) -> new IcebergTableWriter(obs, client),
+                        (obs, client, registrar) -> new IcebergTableWriter(obs, client, registrar),
                         base -> new SparkSessionFactory().createIcebergTableSparkSession(base))
                 .run();
     }

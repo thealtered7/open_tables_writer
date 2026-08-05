@@ -49,6 +49,8 @@ class FileFlushNotificationTest {
         assertEquals(true, json.get("value_schema").isNull());
         assertEquals(true, json.get("key_schema_id").isNull());
         assertEquals(true, json.get("value_schema_id").isNull());
+        assertEquals(32591512L, json.get("source_min_lsn").asLong());
+        assertEquals(32592000L, json.get("source_max_lsn").asLong());
     }
 
     @Test
@@ -110,6 +112,8 @@ class FileFlushNotificationTest {
                 null,
                 null,
                 null,
-                null);
+                null,
+                32591512L,
+                32592000L);
     }
 }

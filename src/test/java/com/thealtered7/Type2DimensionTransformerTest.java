@@ -3,6 +3,8 @@ package com.thealtered7;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
 
 import com.thealtered7.datapipelines.KafkaWriteContext;
 import com.thealtered7.datapipelines.RecordingDatapipelinesClient;
@@ -20,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -340,6 +343,13 @@ class Type2DimensionTransformerTest {
     void transformRegistersType2WriteForIceberg(@TempDir Path tempDir) throws Exception {
         TableIdentity table = writeBronzeTable(tempDir, SAMPLE_JSON_LINE);
         RecordingDatapipelinesClient client = new RecordingDatapipelinesClient();
+        List<String> subjects = new java.util.ArrayList<>();
+        List<String> schemas = new java.util.ArrayList<>();
+        com.thealtered7.schemaregistry.TableSchemaRegistrar registrar = (subject, sparkSchemaJson) -> {
+            subjects.add(subject);
+            schemas.add(sparkSchemaJson);
+            return "88";
+        };
         KafkaWriteContext kafka = new KafkaWriteContext("open-table-write-notifications", 0, 7L);
         Type2WriteIdentity type2WriteIdentity = new Type2WriteIdentity(
                 "test-instance",
@@ -359,7 +369,9 @@ class Type2DimensionTransformerTest {
                 null,
                 null,
                 null,
-                null);
+                null,
+                10L,
+                20L);
         Type1WriteIdentity type1WriteIdentity = new Type1WriteIdentity(
                 "test-instance",
                 "geo",
@@ -378,9 +390,11 @@ class Type2DimensionTransformerTest {
                 null,
                 null,
                 null,
-                null);
+                null,
+                10L,
+                20L);
 
-        new Type2DimensionTransformer(Observability.noop(), client)
+        new Type2DimensionTransformer(Observability.noop(), client, registrar)
                 .transform(
                         spark,
                         new IcebergType2TableAccess(table, tempDir.resolve("silver")),
@@ -406,11 +420,17 @@ class Type2DimensionTransformerTest {
         assertEquals(2048L, registration.rawFileSize());
         assertEquals("job-1", registration.extractJobId());
         assertEquals(BUFFER_1, registration.extractBufferId());
+        assertEquals(10L, registration.sourceMinLsn());
+        assertEquals(20L, registration.sourceMaxLsn());
         assertNotNull(registration.mergeStartAt());
         assertNotNull(registration.mergeEndAt());
         assertTrue(!registration.mergeStartAt().isAfter(registration.mergeEndAt()));
         assertEquals(tempDir.resolve("silver").toAbsolutePath().toString(), registration.warehousePath());
         assertEquals(kafka, registration.kafka());
+        assertNull(registration.keySchema());
+        assertNull(registration.keySchemaId());
+        assertNotNull(registration.valueSchema());
+        assertEquals("88", registration.valueSchemaId());
 
         TableWriteRegistration type1Registration = client.type1Writes().get(0);
         assertEquals(TableWriteRegistration.WRITE_TYPE_SILVER_TYPE_1, type1Registration.writeType());
@@ -420,9 +440,22 @@ class Type2DimensionTransformerTest {
         assertEquals(1L, type1Registration.mergeRowCount());
         assertEquals("/opt/data/raw/geo/public/scalars/file.jsonl", type1Registration.rawFilePath());
         assertEquals(2048L, type1Registration.rawFileSize());
+        assertEquals(10L, type1Registration.sourceMinLsn());
+        assertEquals(20L, type1Registration.sourceMaxLsn());
         assertNotNull(type1Registration.mergeStartAt());
         assertNotNull(type1Registration.mergeEndAt());
         assertEquals(kafka, type1Registration.kafka());
+        assertNull(type1Registration.keySchema());
+        assertNull(type1Registration.keySchemaId());
+        assertNotNull(type1Registration.valueSchema());
+        assertEquals("88", type1Registration.valueSchemaId());
+
+        assertEquals(
+                Set.of(
+                        "iceberg.geo.public_silver.scalars_type2-value",
+                        "iceberg.geo.public_silver.scalars_type1-value"),
+                new java.util.HashSet<>(subjects));
+        assertEquals(2, schemas.size());
     }
 
     @Test
@@ -448,6 +481,8 @@ class Type2DimensionTransformerTest {
                 null,
                 null,
                 null,
+                null,
+                null,
                 null);
         Type1WriteIdentity type1WriteIdentity = new Type1WriteIdentity(
                 "test-instance",
@@ -461,6 +496,8 @@ class Type2DimensionTransformerTest {
                 null,
                 null,
                 BUFFER_1,
+                null,
+                null,
                 null,
                 null,
                 null,

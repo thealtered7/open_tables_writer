@@ -50,6 +50,8 @@ class TableUpdatedNotificationPublisherTest {
                 null,
                 null,
                 null,
+                null,
+                null,
                 null);
     }
 }

@@ -25,7 +25,9 @@ public record Type2WriteIdentity(
         String keySchema,
         String valueSchema,
         String keySchemaId,
-        String valueSchemaId) {
+        String valueSchemaId,
+        Long sourceMinLsn,
+        Long sourceMaxLsn) {
 
     public static String getWriteNamespace(String bronzeNamespace) {
         return OpenTableNamespaces.silverFromBronze(bronzeNamespace);
@@ -56,7 +58,9 @@ public record Type2WriteIdentity(
                 notification.keySchema(),
                 notification.valueSchema(),
                 notification.keySchemaId(),
-                notification.valueSchemaId());
+                notification.valueSchemaId(),
+                notification.sourceMinLsn(),
+                notification.sourceMaxLsn());
     }
 
     public boolean isComplete() {

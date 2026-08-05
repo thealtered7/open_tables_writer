@@ -41,6 +41,8 @@ class DeadLetterPublisherTest {
                 null,
                 null,
                 null,
+                null,
+                null,
                 null);
         ConsumerRecord<String, FileFlushNotification> record =
                 new ConsumerRecord<>("cdc-file-write", 2, 9L, "key", payload);

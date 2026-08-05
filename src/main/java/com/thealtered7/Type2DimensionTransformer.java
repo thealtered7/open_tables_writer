@@ -7,6 +7,10 @@ import com.thealtered7.datapipelines.TableWriteRegistration;
 import com.thealtered7.models.TableUpdatedNotification.OpenTableFormat;
 import com.thealtered7.observability.Observability;
 import com.thealtered7.schema.IcebergSchemaEvolver;
+import com.thealtered7.schemaregistry.SchemaRegistryConfig;
+import com.thealtered7.schemaregistry.TableSchemaRegistrar;
+import com.thealtered7.schemaregistry.TableSchemaRegistrars;
+import com.thealtered7.schemaregistry.TableSchemaSubjects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -79,6 +83,7 @@ public class Type2DimensionTransformer {
 
     private final Observability observability;
     private final DatapipelinesClient datapipelinesClient;
+    private final TableSchemaRegistrar tableSchemaRegistrar;
 
     public Type2DimensionTransformer() {
         this(Observability.noop());
@@ -89,8 +94,17 @@ public class Type2DimensionTransformer {
     }
 
     public Type2DimensionTransformer(Observability observability, DatapipelinesClient datapipelinesClient) {
+        this(observability, datapipelinesClient, TableSchemaRegistrars.create(SchemaRegistryConfig.none()));
+    }
+
+    public Type2DimensionTransformer(
+            Observability observability,
+            DatapipelinesClient datapipelinesClient,
+            TableSchemaRegistrar tableSchemaRegistrar) {
         this.observability = Objects.requireNonNull(observability, "observability");
         this.datapipelinesClient = Objects.requireNonNull(datapipelinesClient, "datapipelinesClient");
+        this.tableSchemaRegistrar =
+                Objects.requireNonNull(tableSchemaRegistrar, "tableSchemaRegistrar");
     }
 
     public void transform(SparkSession spark, TableIdentity table, String extractBufferId) {
@@ -387,7 +401,25 @@ public class Type2DimensionTransformer {
                 access.mergeSilver(spark, stagingView, VERSION_KEY_COLUMN, updateSetClause);
             }
             Instant mergeEndAt = Instant.now();
-            registerType2Write(access, rowCount, kafka, type2WriteIdentity, mergeStartAt, mergeEndAt);
+            spark.catalog().refreshTable(access.silverCatalogTableName());
+            String tableSchemaJson = spark.table(access.silverCatalogTableName()).schema().json();
+            String tableSchemaId = null;
+            if (type2WriteIdentity != null && type2WriteIdentity.isComplete()) {
+                String subject = TableSchemaSubjects.valueSubject(
+                        type2WriteIdentity.databaseName(),
+                        type2WriteIdentity.namespaceName(),
+                        type2WriteIdentity.tableName());
+                tableSchemaId = tableSchemaRegistrar.register(subject, tableSchemaJson);
+            }
+            registerType2Write(
+                    access,
+                    rowCount,
+                    kafka,
+                    type2WriteIdentity,
+                    mergeStartAt,
+                    mergeEndAt,
+                    tableSchemaJson,
+                    tableSchemaId);
             mergeIntoType1(spark, access, evolved, kafka, type1WriteIdentity, valueSchema);
         } finally {
             spark.catalog().dropTempView(stagingView);
@@ -437,7 +469,25 @@ public class Type2DimensionTransformer {
                 access.mergeType1(spark, stagingView, ID_COLUMN, updateSetClause);
             }
             Instant mergeEndAt = Instant.now();
-            registerType1Write(access, rowCount, kafka, type1WriteIdentity, mergeStartAt, mergeEndAt);
+            spark.catalog().refreshTable(access.type1CatalogTableName());
+            String tableSchemaJson = spark.table(access.type1CatalogTableName()).schema().json();
+            String tableSchemaId = null;
+            if (type1WriteIdentity != null && type1WriteIdentity.isComplete()) {
+                String subject = TableSchemaSubjects.valueSubject(
+                        type1WriteIdentity.databaseName(),
+                        type1WriteIdentity.namespaceName(),
+                        type1WriteIdentity.tableName());
+                tableSchemaId = tableSchemaRegistrar.register(subject, tableSchemaJson);
+            }
+            registerType1Write(
+                    access,
+                    rowCount,
+                    kafka,
+                    type1WriteIdentity,
+                    mergeStartAt,
+                    mergeEndAt,
+                    tableSchemaJson,
+                    tableSchemaId);
         } finally {
             spark.catalog().dropTempView(stagingView);
         }
@@ -449,7 +499,9 @@ public class Type2DimensionTransformer {
             KafkaWriteContext kafka,
             Type2WriteIdentity writeIdentity,
             Instant mergeStartAt,
-            Instant mergeEndAt) {
+            Instant mergeEndAt,
+            String tableSchemaJson,
+            String tableSchemaId) {
         if (access.format() != OpenTableFormat.ICEBERG) {
             return;
         }
@@ -482,10 +534,12 @@ public class Type2DimensionTransformer {
                     mergeEndAt,
                     access.warehousePath(),
                     kafka,
-                    writeIdentity.keySchema(),
-                    writeIdentity.valueSchema(),
-                    writeIdentity.keySchemaId(),
-                    writeIdentity.valueSchemaId()));
+                    null,
+                    tableSchemaJson,
+                    null,
+                    tableSchemaId,
+                    writeIdentity.sourceMinLsn(),
+                    writeIdentity.sourceMaxLsn()));
         } catch (RuntimeException e) {
             log.error("Failed to register type-2 table write for {}", access.tableFqn(), e);
         }
@@ -497,7 +551,9 @@ public class Type2DimensionTransformer {
             KafkaWriteContext kafka,
             Type1WriteIdentity writeIdentity,
             Instant mergeStartAt,
-            Instant mergeEndAt) {
+            Instant mergeEndAt,
+            String tableSchemaJson,
+            String tableSchemaId) {
         if (access.format() != OpenTableFormat.ICEBERG) {
             return;
         }
@@ -530,10 +586,12 @@ public class Type2DimensionTransformer {
                     mergeEndAt,
                     access.warehousePath(),
                     kafka,
-                    writeIdentity.keySchema(),
-                    writeIdentity.valueSchema(),
-                    writeIdentity.keySchemaId(),
-                    writeIdentity.valueSchemaId()));
+                    null,
+                    tableSchemaJson,
+                    null,
+                    tableSchemaId,
+                    writeIdentity.sourceMinLsn(),
+                    writeIdentity.sourceMaxLsn()));
         } catch (RuntimeException e) {
             log.error("Failed to register type-1 table write for {}", access.tableFqn(), e);
         }
@@ -594,6 +652,8 @@ public class Type2DimensionTransformer {
                 null,
                 null,
                 extractBufferId,
+                null,
+                null,
                 null,
                 null,
                 null,

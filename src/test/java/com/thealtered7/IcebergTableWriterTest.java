@@ -3,6 +3,8 @@ package com.thealtered7;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 import com.thealtered7.datapipelines.KafkaWriteContext;
@@ -10,6 +12,7 @@ import com.thealtered7.datapipelines.RecordingDatapipelinesClient;
 import com.thealtered7.datapipelines.TableWriteRegistration;
 import com.thealtered7.models.FileFlushNotification;
 import com.thealtered7.observability.Observability;
+import com.thealtered7.schemaregistry.TableSchemaRegistrar;
 import org.apache.spark.sql.SparkSession;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -18,6 +21,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrowsExactly;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -156,6 +161,51 @@ class IcebergTableWriterTest {
         assertEquals(null, registration.mergeEndAt());
         assertEquals(dataDirectory.toAbsolutePath().toString(), registration.warehousePath());
         assertEquals(kafka, registration.kafka());
+        assertNull(registration.keySchema());
+        assertNull(registration.keySchemaId());
+        assertNotNull(registration.valueSchema());
+        assertTrue(registration.valueSchema().contains("\"type\""));
+        assertNull(registration.valueSchemaId());
+    }
+
+    @Test
+    void writeToTableRegistersSparkSchemaWithRegistrar(@TempDir Path tempDir) throws Exception {
+        Path inputFile = tempDir.resolve("geo.public.schema_reg-2026-05-31_02-51-21.jsonl");
+        Files.writeString(inputFile, SAMPLE_JSON_LINE);
+        Path dataDirectory = tempDir.resolve("warehouse-schema-reg");
+
+        RecordingDatapipelinesClient client = new RecordingDatapipelinesClient();
+        List<String> subjects = new ArrayList<>();
+        List<String> schemas = new ArrayList<>();
+        TableSchemaRegistrar registrar = (subject, sparkSchemaJson) -> {
+            subjects.add(subject);
+            schemas.add(sparkSchemaJson);
+            return "77";
+        };
+        SourceTableIdentity source =
+                new SourceTableIdentity("test-instance", "geo", "public", "schema_reg");
+        FileFlushNotification flush = sampleFlush(
+                inputFile.toString(),
+                "job-schema",
+                "buf-schema",
+                "cdc",
+                Instant.parse("2026-05-31T02:50:21Z"),
+                Instant.parse("2026-05-31T02:51:21Z"),
+                "test-instance",
+                "geo",
+                "public",
+                "schema_reg");
+        IcebergTableWriter writer = new IcebergTableWriter(Observability.noop(), client, registrar);
+        writer.writeToTable(spark, inputFile, dataDirectory, null, source, flush);
+
+        assertEquals(List.of("iceberg.geo.public_bronze.schema_reg-value"), subjects);
+        assertEquals(1, schemas.size());
+        assertTrue(schemas.get(0).contains("\"type\""));
+        TableWriteRegistration registration = client.bronzeWrites().get(0);
+        assertEquals(schemas.get(0), registration.valueSchema());
+        assertEquals("77", registration.valueSchemaId());
+        assertNull(registration.keySchema());
+        assertNull(registration.keySchemaId());
     }
 
     @Test
@@ -237,6 +287,8 @@ class IcebergTableWriterTest {
                 sourceSchemaName,
                 sourceTableName,
                 "/opt/data/raw/",
+                null,
+                null,
                 null,
                 null,
                 null,

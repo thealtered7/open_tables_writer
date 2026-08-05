@@ -98,7 +98,9 @@ class DatapipelinesHttpClientTest {
                 "{\"type\":\"struct\",\"fields\":[]}",
                 "{\"type\":\"struct\",\"name\":\"envelope\"}",
                 "1",
-                "2");
+                "2",
+                100L,
+                200L);
     }
 
     private static TableWriteRegistration sampleType1Registration() {
@@ -127,7 +129,9 @@ class DatapipelinesHttpClientTest {
                 null,
                 null,
                 null,
-                null);
+                null,
+                100L,
+                200L);
     }
 
     private static TableWriteRegistration sampleType2Registration() {
@@ -156,7 +160,9 @@ class DatapipelinesHttpClientTest {
                 null,
                 null,
                 null,
-                null);
+                null,
+                100L,
+                200L);
     }
 
     @Test
@@ -209,6 +215,8 @@ class DatapipelinesHttpClientTest {
         assertEquals("{\"type\":\"struct\",\"name\":\"envelope\"}", body.get("value_schema").asText());
         assertEquals("1", body.get("key_schema_id").asText());
         assertEquals("2", body.get("value_schema_id").asText());
+        assertEquals(100L, body.get("source_min_lsn").asLong());
+        assertEquals(200L, body.get("source_max_lsn").asLong());
     }
 
     @Test
@@ -274,6 +282,8 @@ class DatapipelinesHttpClientTest {
                 "public",
                 "scalars",
                 5L,
+                null,
+                null,
                 null,
                 null,
                 null,

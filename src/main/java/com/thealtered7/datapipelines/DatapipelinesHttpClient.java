@@ -135,7 +135,9 @@ public final class DatapipelinesHttpClient implements DatapipelinesClient {
                 registration.keySchema(),
                 registration.valueSchema(),
                 registration.keySchemaId(),
-                registration.valueSchemaId());
+                registration.valueSchemaId(),
+                registration.sourceMinLsn(),
+                registration.sourceMaxLsn());
     }
 
     private void post(String operation, String tableName, Object requestBody) {

@@ -31,7 +31,9 @@ public record TableWriteRegistration(
         String keySchema,
         String valueSchema,
         String keySchemaId,
-        String valueSchemaId) {
+        String valueSchemaId,
+        Long sourceMinLsn,
+        Long sourceMaxLsn) {
 
     public static final String WRITE_TYPE_BRONZE = "bronze";
     public static final String WRITE_TYPE_SILVER_TYPE_1 = "silver_type_1";

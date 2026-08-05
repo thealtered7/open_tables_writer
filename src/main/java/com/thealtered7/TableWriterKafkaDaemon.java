@@ -9,13 +9,15 @@ import com.thealtered7.models.TableUpdatedNotification;
 import com.thealtered7.observability.Observability;
 import com.thealtered7.observability.ObservabilityFactory;
 import com.thealtered7.schemaregistry.SchemaAwareKafka;
+import com.thealtered7.schemaregistry.TableSchemaRegistrar;
+import com.thealtered7.schemaregistry.TableSchemaRegistrars;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BiFunction;
+import java.util.function.Function;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -30,12 +32,19 @@ public class TableWriterKafkaDaemon {
     private static final Logger log = LoggerFactory.getLogger(TableWriterKafkaDaemon.class);
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(1000);
 
-    private final BiFunction<Observability, DatapipelinesClient, ? extends TableWriter> writerFactory;
-    private final java.util.function.Function<Path, SparkSession> sparkSessionFactory;
+    @FunctionalInterface
+    public interface WriterFactory {
+        TableWriter create(
+                Observability observability,
+                DatapipelinesClient datapipelinesClient,
+                TableSchemaRegistrar tableSchemaRegistrar);
+    }
+
+    private final WriterFactory writerFactory;
+    private final Function<Path, SparkSession> sparkSessionFactory;
 
     public TableWriterKafkaDaemon(
-            BiFunction<Observability, DatapipelinesClient, ? extends TableWriter> writerFactory,
-            java.util.function.Function<Path, SparkSession> sparkSessionFactory) {
+            WriterFactory writerFactory, Function<Path, SparkSession> sparkSessionFactory) {
         this.writerFactory = Objects.requireNonNull(writerFactory, "writerFactory");
         this.sparkSessionFactory = Objects.requireNonNull(sparkSessionFactory, "sparkSessionFactory");
     }
@@ -54,7 +63,9 @@ public class TableWriterKafkaDaemon {
                 config.datapipelinesCatalogName(),
                 config.datapipelinesJwtEnabled(),
                 observability);
-        TableWriter writer = writerFactory.apply(observability, datapipelinesClient);
+        TableSchemaRegistrar tableSchemaRegistrar =
+                TableSchemaRegistrars.create(config.schemaRegistryConfig());
+        TableWriter writer = writerFactory.create(observability, datapipelinesClient, tableSchemaRegistrar);
         SparkSession spark = sparkSessionFactory.apply(dataDirectoryBasePath);
         KafkaConsumer<String, FileFlushNotification> consumer = createConsumer(config);
         TableUpdatedNotificationPublisher publisher = new TableUpdatedNotificationPublisher(
@@ -266,7 +277,9 @@ public class TableWriterKafkaDaemon {
                 source.keySchema(),
                 source.valueSchema(),
                 source.keySchemaId(),
-                source.valueSchemaId());
+                source.valueSchemaId(),
+                source.sourceMinLsn(),
+                source.sourceMaxLsn());
         publisher.publish(notification);
     }
 

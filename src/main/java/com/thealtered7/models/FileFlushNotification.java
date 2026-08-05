@@ -25,4 +25,6 @@ public record FileFlushNotification(
         @JsonProperty("key_schema") String keySchema,
         @JsonProperty("value_schema") String valueSchema,
         @JsonProperty("key_schema_id") String keySchemaId,
-        @JsonProperty("value_schema_id") String valueSchemaId) {}
+        @JsonProperty("value_schema_id") String valueSchemaId,
+        @JsonProperty("source_min_lsn") Long sourceMinLsn,
+        @JsonProperty("source_max_lsn") Long sourceMaxLsn) {}
