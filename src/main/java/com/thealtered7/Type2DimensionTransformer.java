@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import static org.apache.spark.sql.functions.col;
 import static org.apache.spark.sql.functions.concat;
 import static org.apache.spark.sql.functions.concat_ws;
+import static org.apache.spark.sql.functions.current_timestamp;
 import static org.apache.spark.sql.functions.expr;
 import static org.apache.spark.sql.functions.lead;
 import static org.apache.spark.sql.functions.lit;
@@ -54,6 +55,8 @@ public class Type2DimensionTransformer {
     private static final String EXTRACT_JOB_ID_COLUMN = "_extract_job_id";
     private static final String EXTRACT_BUFFER_ID_COLUMN = "_extract_buffer_id";
     private static final String EXTRACT_TYPE_COLUMN = "_extract_type";
+    private static final String EXTRACTED_AT_COLUMN = "_extracted_at";
+    private static final String TRANSFORMED_AT_COLUMN = "_transformed_at";
     private static final String PRIMARY_KEY_COLUMN = "primary_key";
     private static final String VERSION_KEY_COLUMN = "version_key";
     private static final int SHA256_BITS = 256;
@@ -285,14 +288,20 @@ public class Type2DimensionTransformer {
         if (!access.silverExists(spark)) {
             return incoming.limit(0);
         }
-        Dataset<Row> incomingExtract = incoming.select(
-                col(ID_COLUMN).alias("incoming_id"),
-                col(SILVER_UPDATED_AT_COLUMN).alias("incoming_updated_at"),
-                col(EXTRACT_JOB_ID_COLUMN).alias("incoming_extract_job_id"),
-                col(EXTRACT_BUFFER_ID_COLUMN).alias("incoming_extract_buffer_id"),
-                col(EXTRACT_TYPE_COLUMN).alias("incoming_extract_type"));
+        boolean hasExtractedAt =
+                Arrays.asList(incoming.columns()).contains(EXTRACTED_AT_COLUMN);
+        List<Column> extractSelect = new ArrayList<>();
+        extractSelect.add(col(ID_COLUMN).alias("incoming_id"));
+        extractSelect.add(col(SILVER_UPDATED_AT_COLUMN).alias("incoming_updated_at"));
+        extractSelect.add(col(EXTRACT_JOB_ID_COLUMN).alias("incoming_extract_job_id"));
+        extractSelect.add(col(EXTRACT_BUFFER_ID_COLUMN).alias("incoming_extract_buffer_id"));
+        extractSelect.add(col(EXTRACT_TYPE_COLUMN).alias("incoming_extract_type"));
+        if (hasExtractedAt) {
+            extractSelect.add(col(EXTRACTED_AT_COLUMN).alias("incoming_extracted_at"));
+        }
+        Dataset<Row> incomingExtract = incoming.select(extractSelect.toArray(Column[]::new));
         Dataset<Row> currentSilver = access.readSilver(spark).filter(col(IS_CURRENT_COLUMN).equalTo(true));
-        return currentSilver
+        Dataset<Row> refreshed = currentSilver
                 .join(
                         incomingExtract,
                         col(ID_COLUMN)
@@ -300,13 +309,20 @@ public class Type2DimensionTransformer {
                                 .and(col(SILVER_UPDATED_AT_COLUMN).equalTo(col("incoming_updated_at"))))
                 .withColumn(EXTRACT_JOB_ID_COLUMN, col("incoming_extract_job_id"))
                 .withColumn(EXTRACT_BUFFER_ID_COLUMN, col("incoming_extract_buffer_id"))
-                .withColumn(EXTRACT_TYPE_COLUMN, col("incoming_extract_type"))
-                .drop(
-                        "incoming_id",
-                        "incoming_updated_at",
-                        "incoming_extract_job_id",
-                        "incoming_extract_buffer_id",
-                        "incoming_extract_type");
+                .withColumn(EXTRACT_TYPE_COLUMN, col("incoming_extract_type"));
+        if (hasExtractedAt) {
+            refreshed = refreshed.withColumn(EXTRACTED_AT_COLUMN, col("incoming_extracted_at"));
+        }
+        List<String> dropCols = new ArrayList<>(List.of(
+                "incoming_id",
+                "incoming_updated_at",
+                "incoming_extract_job_id",
+                "incoming_extract_buffer_id",
+                "incoming_extract_type"));
+        if (hasExtractedAt) {
+            dropCols.add("incoming_extracted_at");
+        }
+        return refreshed.drop(dropCols.toArray(String[]::new));
     }
 
     private Dataset<Row> buildDeleteType2Rows(SparkSession spark, Type2TableAccess access, Dataset<Row> deletesRaw) {
@@ -378,11 +394,12 @@ public class Type2DimensionTransformer {
             ensureIsDeletedColumn(spark, access);
             ensureVersionKeyColumn(spark, access);
         }
+        Dataset<Row> withTransformedAt = type2Rows.withColumn(TRANSFORMED_AT_COLUMN, current_timestamp());
         Dataset<Row> evolved = IcebergSchemaEvolver.evolveAndAlign(
                 spark,
                 access.silverCatalogTableName(),
                 access.silverSqlTableName(),
-                type2Rows,
+                withTransformedAt,
                 valueSchema,
                 IcebergSchemaEvolver.LayerMode.SILVER);
 
@@ -446,11 +463,12 @@ public class Type2DimensionTransformer {
             return;
         }
 
+        Dataset<Row> withTransformedAt = type1Rows.withColumn(TRANSFORMED_AT_COLUMN, current_timestamp());
         Dataset<Row> evolvedType1 = IcebergSchemaEvolver.evolveAndAlign(
                 spark,
                 access.type1CatalogTableName(),
                 access.type1SqlTableName(),
-                type1Rows,
+                withTransformedAt,
                 valueSchema,
                 IcebergSchemaEvolver.LayerMode.SILVER);
 

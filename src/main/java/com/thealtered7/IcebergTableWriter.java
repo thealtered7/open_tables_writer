@@ -23,10 +23,13 @@ import org.apache.spark.sql.SparkSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.apache.spark.sql.functions.current_timestamp;
+
 public class IcebergTableWriter implements TableWriter {
     private static final Logger log = LoggerFactory.getLogger(IcebergTableWriter.class);
     private static final String INCOMING_VIEW = "incoming_cdc";
     private static final String WAREHOUSE_CONFIG = "spark.sql.catalog.local_catalog.warehouse";
+    private static final String TRANSFORMED_AT_COLUMN = "_transformed_at";
 
     private final Observability observability;
     private final DatapipelinesClient datapipelinesClient;
@@ -118,11 +121,13 @@ public class IcebergTableWriter implements TableWriter {
         log.info("catalog table: {}", catalogTable);
 
         String valueSchema = flush == null ? null : flush.valueSchema();
+        Dataset<Row> withTransformedAt =
+                partitioned.withColumn(TRANSFORMED_AT_COLUMN, current_timestamp());
         Dataset<Row> aligned = IcebergSchemaEvolver.evolveAndAlign(
                 spark,
                 catalogTable,
                 sqlTable,
-                partitioned,
+                withTransformedAt,
                 valueSchema,
                 IcebergSchemaEvolver.LayerMode.BRONZE);
 

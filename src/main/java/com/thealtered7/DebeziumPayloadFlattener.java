@@ -185,7 +185,9 @@ public final class DebeziumPayloadFlattener {
     }
 
     private boolean isTimestampColumn(String name) {
-        return name.endsWith("_created_at") || name.endsWith("_updated_at");
+        return name.endsWith("_created_at")
+                || name.endsWith("_updated_at")
+                || name.equals("_extracted_at");
     }
 
     public Path getOutputTablePath(String tableFQN, Path dataDirectoryBasePath) {
