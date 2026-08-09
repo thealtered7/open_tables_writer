@@ -8,6 +8,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.micrometer.core.instrument.Clock;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.binder.jvm.ClassLoaderMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmGcMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmMemoryMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmThreadMetrics;
+import io.micrometer.core.instrument.binder.system.ProcessorMetrics;
 import io.micrometer.core.instrument.observation.DefaultMeterObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.registry.otlp.OtlpConfig;
@@ -38,16 +44,19 @@ public final class ObservabilityFactory implements AutoCloseable {
     private static final String SERVICE_NAME = "open-tables-writer";
 
     private final OtlpMeterRegistry meterRegistry;
+    private final JvmGcMetrics jvmGcMetrics;
     private final OpenTelemetrySdk openTelemetrySdk;
     private final SdkTracerProvider tracerProvider;
     private final Observability observability;
 
     private ObservabilityFactory(
             OtlpMeterRegistry meterRegistry,
+            JvmGcMetrics jvmGcMetrics,
             OpenTelemetrySdk openTelemetrySdk,
             SdkTracerProvider tracerProvider,
             Observability observability) {
         this.meterRegistry = meterRegistry;
+        this.jvmGcMetrics = jvmGcMetrics;
         this.openTelemetrySdk = openTelemetrySdk;
         this.tracerProvider = tracerProvider;
         this.observability = observability;
@@ -60,6 +69,7 @@ public final class ObservabilityFactory implements AutoCloseable {
         log.info("OpenTelemetry metrics export URL: {}", metricsExportUrl);
 
         OtlpMeterRegistry meterRegistry = new OtlpMeterRegistry(metricsConfig(metricsExportUrl), Clock.SYSTEM);
+        JvmGcMetrics jvmGcMetrics = bindJvmMetrics(meterRegistry);
 
         OtlpHttpSpanExporter spanExporter = OtlpHttpSpanExporter.builder()
                 .setEndpoint(tracingEndpoint)
@@ -93,7 +103,8 @@ public final class ObservabilityFactory implements AutoCloseable {
         Observability observability =
                 new Observability(observationRegistry, meterRegistry);
 
-        return new ObservabilityFactory(meterRegistry, openTelemetrySdk, tracerProvider, observability);
+        return new ObservabilityFactory(
+                meterRegistry, jvmGcMetrics, openTelemetrySdk, tracerProvider, observability);
     }
 
     public Observability observability() {
@@ -107,15 +118,28 @@ public final class ObservabilityFactory implements AutoCloseable {
     @Override
     public void close() {
         log.info("Shutting down OpenTelemetry exporters");
+        jvmGcMetrics.close();
         meterRegistry.close();
         tracerProvider.close();
         openTelemetrySdk.close();
+    }
+
+    /** Binds standard JVM meters; returns GC metrics for lifecycle close. */
+    static JvmGcMetrics bindJvmMetrics(MeterRegistry meterRegistry) {
+        new ClassLoaderMetrics().bindTo(meterRegistry);
+        new JvmMemoryMetrics().bindTo(meterRegistry);
+        new JvmThreadMetrics().bindTo(meterRegistry);
+        new ProcessorMetrics().bindTo(meterRegistry);
+        JvmGcMetrics jvmGcMetrics = new JvmGcMetrics();
+        jvmGcMetrics.bindTo(meterRegistry);
+        return jvmGcMetrics;
     }
 
     private static OtlpConfig metricsConfig(String metricsExportUrl) {
         Map<String, String> properties = new HashMap<>();
         properties.put("otlp.url", metricsExportUrl);
         properties.put("otlp.step", "15s");
+        properties.put("otlp.resourceAttributes", "service.name=" + SERVICE_NAME);
         return new OtlpConfig() {
             @Override
             public String get(String key) {

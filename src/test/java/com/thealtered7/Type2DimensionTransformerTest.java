@@ -36,6 +36,7 @@ class Type2DimensionTransformerTest {
     private static final String BUFFER_4 = "buf-4";
     private static final String BUFFER_5 = "buf-5";
     private static final String BUFFER_6 = "buf-6";
+    private static final String BUFFER_7 = "buf-7";
 
     private static final String SAMPLE_JSON_LINE = """
             {"extract":{"extract_job_id":"job-1","extract_buffer_id":"buf-1","extract_type":"cdc","extracted_at":"2026-05-31T02:50:00.000000Z"},"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":1,"name":"scalar","value":1.06,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T01:55:32.887469Z"},"after":{"id":1,"name":"scalar","value":1.04,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z"},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194444244,"snapshot":"false","db":"geo","sequence":"[\\"32589016\\",\\"32591512\\"]","ts_us":1780194444244620,"ts_ns":1780194444244620000,"schema":"public","table":"scalars","txId":22179,"lsn":32591512,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"u","ts_ms":1780194444583,"ts_us":1780194444583639,"ts_ns":1780194444583639448}}
@@ -43,6 +44,10 @@ class Type2DimensionTransformerTest {
 
     private static final String SAMPLE_JSON_LINE_V2 = """
             {"extract":{"extract_job_id":"job-1","extract_buffer_id":"buf-2","extract_type":"cdc"},"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":1,"name":"scalar","value":1.04,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z"},"after":{"id":1,"name":"scalar","value":1.02,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T03:27:24.242870Z"},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194445244,"snapshot":"false","db":"geo","sequence":"[\\"32592000\\",\\"32592512\\"]","ts_us":1780194445244620,"ts_ns":1780194445244620000,"schema":"public","table":"scalars","txId":22180,"lsn":32592000,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"u","ts_ms":1780194445583,"ts_us":1780194445583639,"ts_ns":1780194445583639448}}
+            """;
+
+    private static final String SAMPLE_JSON_LINE_V3 = """
+            {"extract":{"extract_job_id":"job-1","extract_buffer_id":"buf-7","extract_type":"cdc"},"schema":{"type":"struct","fields":[]},"payload":{"before":{"id":1,"name":"scalar","value":1.02,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T03:27:24.242870Z"},"after":{"id":1,"name":"scalar","value":1.00,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T04:27:24.242870Z"},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194446244,"snapshot":"false","db":"geo","sequence":"[\\"32596000\\",\\"32596512\\"]","ts_us":1780194446244620,"ts_ns":1780194446244620000,"schema":"public","table":"scalars","txId":22181,"lsn":32596512,"xmin":null,"origin":null,"origin_lsn":null},"transaction":null,"op":"u","ts_ms":1780194446583,"ts_us":1780194446583639,"ts_ns":1780194446583639448}}
             """;
 
     /** Same as V2 but adds business column absent from the prior silver Type2 schema. */
@@ -106,6 +111,8 @@ class Type2DimensionTransformerTest {
         assertEquals("cdc", row.getAs("_extract_type"));
         assertNotNull(row.getAs("_extracted_at"));
         assertNotNull(row.getAs("_transformed_at"));
+        assertEquals(1, ((Number) row.getAs("_record_number")).intValue());
+        assertEquals(1, ((Number) row.getAs("_record_count")).intValue());
     }
 
     @Test
@@ -141,6 +148,45 @@ class Type2DimensionTransformerTest {
                 currentVersion.getTimestamp(currentVersion.fieldIndex("_valid_from")));
         assertTrue(priorVersion.getTimestamp(priorVersion.fieldIndex("_valid_to"))
                 .before(currentVersion.getTimestamp(currentVersion.fieldIndex("_valid_from"))));
+        assertEquals(1, ((Number) priorVersion.getAs("_record_number")).intValue());
+        assertEquals(2, ((Number) priorVersion.getAs("_record_count")).intValue());
+        assertEquals(2, ((Number) currentVersion.getAs("_record_number")).intValue());
+        assertEquals(2, ((Number) currentVersion.getAs("_record_count")).intValue());
+    }
+
+    @Test
+    void thirdVersionUpdatesRecordCountOnPriorRows(@TempDir Path tempDir) throws Exception {
+        TableIdentity table = writeBronzeTable(tempDir, SAMPLE_JSON_LINE);
+        new Type2DimensionTransformer().transform(spark, table, BUFFER_1);
+
+        Path v2File = tempDir.resolve("geo.public.scalars-2026-06-01_02-14-58.jsonl");
+        Files.writeString(v2File, SAMPLE_JSON_LINE_V2);
+        new IcebergTableWriter().writeToTable(spark, v2File, tempDir.resolve("bronze"));
+        new Type2DimensionTransformer().transform(spark, table, BUFFER_2);
+
+        Path v3File = tempDir.resolve("geo.public.scalars-2026-06-01_04-14-58.jsonl");
+        Files.writeString(v3File, SAMPLE_JSON_LINE_V3);
+        new IcebergTableWriter().writeToTable(spark, v3File, tempDir.resolve("bronze"));
+        new Type2DimensionTransformer().transform(spark, table, BUFFER_7);
+
+        Dataset<Row> silver = spark.table(toSilverCatalogTable(table));
+        assertEquals(3L, silver.count());
+
+        Row v1 = silver.filter("primary_key = '1-32591512'").first();
+        Row v2 = silver.filter("primary_key = '1-32592000'").first();
+        Row v3 = silver.filter("primary_key = '1-32596512'").first();
+
+        assertEquals(1, ((Number) v1.getAs("_record_number")).intValue());
+        assertEquals(3, ((Number) v1.getAs("_record_count")).intValue());
+        assertEquals(2, ((Number) v2.getAs("_record_number")).intValue());
+        assertEquals(3, ((Number) v2.getAs("_record_count")).intValue());
+        assertEquals(3, ((Number) v3.getAs("_record_number")).intValue());
+        assertEquals(3, ((Number) v3.getAs("_record_count")).intValue());
+        assertTrue(v3.getBoolean(v3.fieldIndex("_is_current")));
+
+        Row type1 = spark.table(toType1CatalogTable(table)).first();
+        assertEquals(3, ((Number) type1.getAs("_record_number")).intValue());
+        assertEquals(3, ((Number) type1.getAs("_record_count")).intValue());
     }
 
     @Test
@@ -236,6 +282,13 @@ class Type2DimensionTransformerTest {
         assertTrue(row.getBoolean(row.fieldIndex("_is_deleted")));
         assertFalse(row.getBoolean(row.fieldIndex("_is_current")));
         assertEquals(DELETE_VALID_TO, row.getTimestamp(row.fieldIndex("_valid_to")).toString());
+        assertEquals(1, ((Number) row.getAs("_record_number")).intValue());
+        assertEquals(1, ((Number) row.getAs("_record_count")).intValue());
+
+        Row type1 = spark.table(toType1CatalogTable(table)).first();
+        assertEquals(1, ((Number) type1.getAs("_record_number")).intValue());
+        assertEquals(1, ((Number) type1.getAs("_record_count")).intValue());
+        assertTrue(type1.getBoolean(type1.fieldIndex("_is_deleted")));
     }
 
     @Test
@@ -257,6 +310,8 @@ class Type2DimensionTransformerTest {
         assertEquals(
                 "1970-01-01 00:00:00",
                 row.getTimestamp(row.fieldIndex("_valid_from")).toString().substring(0, 19));
+        assertEquals(1, ((Number) row.getAs("_record_number")).intValue());
+        assertEquals(1, ((Number) row.getAs("_record_count")).intValue());
     }
 
     @Test
@@ -537,6 +592,10 @@ class Type2DimensionTransformerTest {
         assertFalse(Arrays.asList(type1.columns()).contains("_is_current"));
         assertFalse(Arrays.asList(type1.columns()).contains("_valid_from"));
         assertFalse(Arrays.asList(type1.columns()).contains("_valid_to"));
+        assertTrue(Arrays.asList(type1.columns()).contains("_record_number"));
+        assertTrue(Arrays.asList(type1.columns()).contains("_record_count"));
+        assertEquals(1, ((Number) row.getAs("_record_number")).intValue());
+        assertEquals(1, ((Number) row.getAs("_record_count")).intValue());
         assertNotNull(row.getAs("_extracted_at"));
         assertNotNull(row.getAs("_transformed_at"));
     }
@@ -558,6 +617,8 @@ class Type2DimensionTransformerTest {
         assertEquals("1-32592000", row.getAs("primary_key"));
         assertEquals(1.02, ((Number) row.getAs("value")).doubleValue(), 0.0001);
         assertFalse(row.getBoolean(row.fieldIndex("_is_deleted")));
+        assertEquals(2, ((Number) row.getAs("_record_number")).intValue());
+        assertEquals(2, ((Number) row.getAs("_record_count")).intValue());
     }
 
     @Test

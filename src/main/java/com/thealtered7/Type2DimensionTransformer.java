@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import static org.apache.spark.sql.functions.col;
 import static org.apache.spark.sql.functions.concat;
 import static org.apache.spark.sql.functions.concat_ws;
+import static org.apache.spark.sql.functions.count;
 import static org.apache.spark.sql.functions.current_timestamp;
 import static org.apache.spark.sql.functions.expr;
 import static org.apache.spark.sql.functions.lead;
@@ -64,6 +65,8 @@ public class Type2DimensionTransformer {
     private static final String VALID_TO_COLUMN = "_valid_to";
     private static final String IS_CURRENT_COLUMN = "_is_current";
     private static final String IS_DELETED_COLUMN = "_is_deleted";
+    private static final String RECORD_NUMBER_COLUMN = "_record_number";
+    private static final String RECORD_COUNT_COLUMN = "_record_count";
     private static final String OP_COLUMN = "_op";
     private static final String TS_MS_COLUMN = "_ts_ms";
     private static final String DELETE_OP = "d";
@@ -76,13 +79,24 @@ public class Type2DimensionTransformer {
     private static final String BEGIN_OF_TIME_LITERAL = "1970-01-01 00:00:00";
     private static final Column END_OF_TIME = expr("timestamp '" + END_OF_TIME_LITERAL + "'");
     private static final Column BEGIN_OF_TIME = expr("timestamp '" + BEGIN_OF_TIME_LITERAL + "'");
-    private static final Set<String> TYPE2_COLUMNS = Set.of(
+    /** SCD attributes preserved on closed history rows (record number/count are recomputed). */
+    private static final List<String> PRESERVED_TYPE2_COLUMNS = List.of(
             VALID_FROM_COLUMN,
             VALID_TO_COLUMN,
             IS_CURRENT_COLUMN,
             PRIMARY_KEY_COLUMN,
             VERSION_KEY_COLUMN,
             IS_DELETED_COLUMN);
+    private static final Set<String> TYPE2_COLUMNS = Set.of(
+            VALID_FROM_COLUMN,
+            VALID_TO_COLUMN,
+            IS_CURRENT_COLUMN,
+            PRIMARY_KEY_COLUMN,
+            VERSION_KEY_COLUMN,
+            IS_DELETED_COLUMN,
+            RECORD_NUMBER_COLUMN,
+            RECORD_COUNT_COLUMN);
+    private static final String NATURAL_KEY_COLUMN = "natural_key";
 
     private final Observability observability;
     private final DatapipelinesClient datapipelinesClient;
@@ -213,14 +227,15 @@ public class Type2DimensionTransformer {
     private Dataset<Row> buildType2Rows(SparkSession spark, Type2TableAccess access, Dataset<Row> incoming) {
         String[] baseColumns = baseColumnNames(incoming);
         Dataset<Row> ids = incoming.select(col(ID_COLUMN)).distinct();
-        Dataset<Row> combined = incoming.select(toColumns(baseColumns));
+        Dataset<Row> tipAndIncoming = incoming.select(toColumns(baseColumns));
+        Dataset<Row> historyRows = null;
 
         if (access.silverExists(spark)) {
             Dataset<Row> incomingKeys = incoming
                     .select(col(ID_COLUMN).alias("incoming_id"), col(SOURCE_LSN_COLUMN).alias("incoming_lsn"))
                     .distinct();
-            Dataset<Row> currentSilver = access.readSilver(spark)
-                    .filter(col(IS_CURRENT_COLUMN).equalTo(true))
+            // Full PK-group history so _record_count can be rewritten on older versions.
+            Dataset<Row> silverForIds = access.readSilver(spark)
                     .join(ids, ID_COLUMN)
                     .join(
                             incomingKeys,
@@ -228,11 +243,19 @@ public class Type2DimensionTransformer {
                                     .equalTo(col("incoming_id"))
                                     .and(col(SOURCE_LSN_COLUMN).equalTo(col("incoming_lsn"))),
                             "left_anti");
-            if (!currentSilver.isEmpty()) {
-                // Incoming may include columns not yet on silver (evolution runs in mergeIntoSilver).
-                // Null-fill so select/unionByName do not fail with UNRESOLVED_COLUMN.
-                combined = combined.unionByName(
-                        selectAlignedToIncoming(currentSilver, incoming, baseColumns));
+            if (!silverForIds.isEmpty()) {
+                Dataset<Row> currentSilver = silverForIds.filter(col(IS_CURRENT_COLUMN).equalTo(true));
+                Dataset<Row> closedHistory = silverForIds.filter(col(IS_CURRENT_COLUMN).equalTo(false));
+                if (!currentSilver.isEmpty()) {
+                    // Incoming may include columns not yet on silver (evolution runs in mergeIntoSilver).
+                    // Null-fill so select/unionByName do not fail with UNRESOLVED_COLUMN.
+                    tipAndIncoming = tipAndIncoming.unionByName(
+                            selectAlignedToIncoming(currentSilver, incoming, baseColumns));
+                }
+                if (!closedHistory.isEmpty()) {
+                    // Preserve SCD attrs; do not re-window validity (would reopen deleted tips).
+                    historyRows = selectAlignedHistory(closedHistory, incoming, baseColumns);
+                }
             }
         }
 
@@ -246,8 +269,11 @@ public class Type2DimensionTransformer {
         Column isCurrent = validTo.equalTo(END_OF_TIME);
         Column primaryKey = concat(
                 col(ID_COLUMN).cast("string"), lit("-"), col(SOURCE_LSN_COLUMN).cast("string"));
+        Column naturalKey = col(ID_COLUMN);
 
-        return combined.withColumn(NEXT_UPDATED_AT_COLUMN, nextUpdatedAt)
+        Dataset<Row> scdRows = tipAndIncoming
+                .withColumn(NATURAL_KEY_COLUMN, naturalKey)
+                .withColumn(NEXT_UPDATED_AT_COLUMN, nextUpdatedAt)
                 .withColumn(VALID_FROM_COLUMN, validFrom)
                 .withColumn(VALID_TO_COLUMN, validTo)
                 .withColumn(IS_CURRENT_COLUMN, isCurrent)
@@ -255,6 +281,10 @@ public class Type2DimensionTransformer {
                 .withColumn(VERSION_KEY_COLUMN, versionKey())
                 .withColumn(IS_DELETED_COLUMN, lit(false))
                 .drop(NEXT_UPDATED_AT_COLUMN);
+
+        Dataset<Row> combined =
+                historyRows == null ? scdRows : scdRows.unionByName(historyRows, true);
+        return withRecordNumbering(combined);
     }
 
     /**
@@ -374,12 +404,15 @@ public class Type2DimensionTransformer {
                 .withColumn(IS_DELETED_COLUMN, lit(true))
                 .withColumn(PRIMARY_KEY_COLUMN, primaryKey)
                 .withColumn(VERSION_KEY_COLUMN, versionKey())
+                .withColumn(RECORD_NUMBER_COLUMN, lit(1))
+                .withColumn(RECORD_COUNT_COLUMN, lit(1))
                 .drop(DELETION_TIME_COLUMN);
 
         if (closedRows == null) {
             return tombstoneRows;
         }
-        return closedRows.unionByName(tombstoneRows, true);
+        // Closing a tip does not change PK-group size; keep existing record number/count.
+        return ensureRecordColumnsPreserved(closedRows).unionByName(tombstoneRows, true);
     }
 
     private void mergeIntoSilver(
@@ -752,6 +785,51 @@ public class Type2DimensionTransformer {
             }
         }
         return aligned.select(toColumns(baseColumns));
+    }
+
+    /**
+     * Aligns closed history rows to the incoming base schema while preserving SCD attributes.
+     * Record number/count are dropped so they can be recomputed over the full PK group.
+     */
+    static Dataset<Row> selectAlignedHistory(
+            Dataset<Row> rows, Dataset<Row> schemaSource, String[] baseColumns) {
+        Set<String> present = Arrays.stream(rows.columns()).collect(Collectors.toSet());
+        Dataset<Row> aligned = rows;
+        for (String name : baseColumns) {
+            if (!present.contains(name)) {
+                aligned = aligned.withColumn(
+                        name, lit(null).cast(schemaSource.schema().apply(name).dataType()));
+            }
+        }
+        if (present.contains(RECORD_NUMBER_COLUMN)) {
+            aligned = aligned.drop(RECORD_NUMBER_COLUMN);
+        }
+        if (present.contains(RECORD_COUNT_COLUMN)) {
+            aligned = aligned.drop(RECORD_COUNT_COLUMN);
+        }
+        List<String> columns = new ArrayList<>(Arrays.asList(baseColumns));
+        columns.addAll(PRESERVED_TYPE2_COLUMNS);
+        return aligned.select(toColumns(columns.toArray(String[]::new)));
+    }
+
+    private static Dataset<Row> withRecordNumbering(Dataset<Row> rows) {
+        WindowSpec ordered = Window.partitionBy(ID_COLUMN).orderBy(col(SOURCE_LSN_COLUMN));
+        WindowSpec partition = Window.partitionBy(ID_COLUMN);
+        return rows.withColumn(RECORD_NUMBER_COLUMN, row_number().over(ordered))
+                .withColumn(RECORD_COUNT_COLUMN, count(lit(1)).over(partition).cast("int"));
+    }
+
+    /** Ensures delete-close rows keep {@code _record_number}/{@code _record_count} when present. */
+    private static Dataset<Row> ensureRecordColumnsPreserved(Dataset<Row> rows) {
+        Set<String> present = Arrays.stream(rows.columns()).collect(Collectors.toSet());
+        Dataset<Row> withCols = rows;
+        if (!present.contains(RECORD_NUMBER_COLUMN)) {
+            withCols = withCols.withColumn(RECORD_NUMBER_COLUMN, lit(1));
+        }
+        if (!present.contains(RECORD_COUNT_COLUMN)) {
+            withCols = withCols.withColumn(RECORD_COUNT_COLUMN, lit(1));
+        }
+        return withCols;
     }
 
     private static Column[] toColumns(String[] columnNames) {
