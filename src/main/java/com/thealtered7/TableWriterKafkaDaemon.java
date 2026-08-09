@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -56,7 +57,6 @@ public class TableWriterKafkaDaemon {
 
         ObservabilityFactory observabilityFactory = ObservabilityFactory.create();
         Observability observability = observabilityFactory.observability();
-        Runtime.getRuntime().addShutdownHook(new Thread(observabilityFactory::shutdown, "observability-shutdown"));
 
         DatapipelinesClient datapipelinesClient = DatapipelinesHttpClient.create(
                 config.datapipelinesBaseUrl(),
@@ -79,10 +79,17 @@ public class TableWriterKafkaDaemon {
                 config.dlqTopic(),
                 config.schemaRegistryConfig());
         AtomicBoolean running = new AtomicBoolean(true);
+        CountDownLatch shutdownComplete = new CountDownLatch(1);
 
         Thread shutdownHook = new Thread(() -> {
+            log.info("Shutdown requested; finishing current message");
             running.set(false);
             consumer.wakeup();
+            try {
+                shutdownComplete.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }, "table-writer-kafka-shutdown");
         Runtime.getRuntime().addShutdownHook(shutdownHook);
 
@@ -101,6 +108,9 @@ public class TableWriterKafkaDaemon {
                     ConsumerRecords<String, FileFlushNotification> records = consumer.poll(POLL_TIMEOUT);
                     observability.lowCardinalityTag("record_count", String.valueOf(records.count()));
                     for (ConsumerRecord<String, FileFlushNotification> record : records) {
+                        if (!running.get()) {
+                            break;
+                        }
                         processRecord(
                                 observability,
                                 config,
@@ -121,13 +131,18 @@ public class TableWriterKafkaDaemon {
             }
             log.info("Consumer wakeup for shutdown");
         } finally {
-            Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            } catch (IllegalStateException ignored) {
+                // JVM is already shutting down
+            }
             consumer.close();
             publisher.close();
             deadLetterPublisher.close();
             spark.stop();
             observabilityFactory.shutdown();
             log.info("Kafka consumer and Spark session stopped");
+            shutdownComplete.countDown();
         }
     }
 

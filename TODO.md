@@ -8,3 +8,4 @@
 7. Work out semantic versioning and releasing. 
 8. Shift Operating Variables from properties files to environment variables. 
 9. DONE Kafka DLQ per pipeline (`kafka.dlq.topic`); commit main offset only after successful processing or successful DLQ publish.
+10. Add a _loaded_at field to bronze and silver layer tables. 

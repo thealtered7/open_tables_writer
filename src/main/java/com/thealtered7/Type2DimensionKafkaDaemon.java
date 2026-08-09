@@ -12,6 +12,8 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -34,8 +36,6 @@ public class Type2DimensionKafkaDaemon {
 
         ObservabilityFactory observabilityFactory = ObservabilityFactory.create();
         Observability observability = observabilityFactory.observability();
-        Runtime.getRuntime()
-                .addShutdownHook(new Thread(observabilityFactory::shutdown, "type2-observability-shutdown"));
 
         SparkSession spark = new SparkSessionFactory().createType2SparkSession(silverWarehouse);
         DatapipelinesClient datapipelinesClient = DatapipelinesHttpClient.create(
@@ -53,11 +53,18 @@ public class Type2DimensionKafkaDaemon {
                 config.clientId(),
                 config.dlqTopic(),
                 config.schemaRegistryConfig());
-        java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
+        AtomicBoolean running = new AtomicBoolean(true);
+        CountDownLatch shutdownComplete = new CountDownLatch(1);
 
         Thread shutdownHook = new Thread(() -> {
+            log.info("Shutdown requested; finishing current message");
             running.set(false);
             consumer.wakeup();
+            try {
+                shutdownComplete.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }, "type2-dimension-kafka-shutdown");
         Runtime.getRuntime().addShutdownHook(shutdownHook);
 
@@ -76,6 +83,9 @@ public class Type2DimensionKafkaDaemon {
                     ConsumerRecords<String, TableUpdatedNotification> records = consumer.poll(POLL_TIMEOUT);
                     observability.lowCardinalityTag("record_count", String.valueOf(records.count()));
                     for (ConsumerRecord<String, TableUpdatedNotification> record : records) {
+                        if (!running.get()) {
+                            break;
+                        }
                         processRecord(
                                 observability,
                                 transformer,
@@ -94,12 +104,17 @@ public class Type2DimensionKafkaDaemon {
             }
             log.info("Consumer wakeup for shutdown");
         } finally {
-            Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook);
+            } catch (IllegalStateException ignored) {
+                // JVM is already shutting down
+            }
             consumer.close();
             deadLetterPublisher.close();
             spark.stop();
             observabilityFactory.shutdown();
             log.info("Kafka consumer and Spark session stopped");
+            shutdownComplete.countDown();
         }
     }
 
