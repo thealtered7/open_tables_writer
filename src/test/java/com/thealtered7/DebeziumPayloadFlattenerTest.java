@@ -113,6 +113,51 @@ class DebeziumPayloadFlattenerTest {
     }
 
     @Test
+    void loadRawFileAndFlattenAvro(@TempDir Path tempDir) throws Exception {
+        Path jsonl = tempDir.resolve("source.jsonl");
+        String jsonLine = """
+                {"extract":{"extract_job_id":"job-avro","extract_buffer_id":"buf-avro","extract_type":"cdc","extracted_at":"2026-05-31T02:51:21Z"},"payload":{"before":null,"after":{"id":9,"name":"scalar","value":9.1,"created_at":"2026-05-24T02:49:32.359424Z","updated_at":"2026-05-31T02:27:24.242870Z"},"source":{"version":"3.5.0.Final","connector":"postgresql","name":"extract","ts_ms":1780194444244,"snapshot":"false","db":"geo","sequence":"[\\"32589016\\",\\"32591512\\"]","ts_us":1780194444244620,"ts_ns":1780194444244620000,"schema":"public","table":"scalars","txId":22179,"lsn":32591512,"xmin":null},"transaction":null,"op":"c","ts_ms":1780194444583,"ts_us":1780194444583639,"ts_ns":1780194444583639448}}
+                """;
+        Files.writeString(jsonl, jsonLine);
+
+        Path avroDir = tempDir.resolve("avro-out");
+        spark.read().json(jsonl.toString()).coalesce(1).write().format("avro").save(avroDir.toString());
+        Path avroFile;
+        try (var stream = Files.walk(avroDir)) {
+            avroFile = stream
+                    .filter(p -> p.getFileName().toString().endsWith(".avro"))
+                    .findFirst()
+                    .orElseThrow();
+        }
+        Path namedAvro = tempDir.resolve("geo.public.scalars-2026-05-31_02-51-21-000001.avro");
+        Files.copy(avroFile, namedAvro);
+
+        DebeziumPayloadFlattener flattener = new DebeziumPayloadFlattener();
+        Dataset<Row> raw = flattener.loadRawFile(spark, namedAvro);
+        Dataset<Row> flat = flattener.flattenPayload(raw);
+
+        assertTrue(Arrays.asList(flat.columns()).contains("after_id"));
+        assertTrue(Arrays.asList(flat.columns()).contains("_extract_job_id"));
+        Row row = flat.first();
+        assertEquals("job-avro", row.getAs("_extract_job_id"));
+        assertEquals(9L, (long) row.getAs("after_id"));
+        assertEquals("c", row.getAs("_op"));
+    }
+
+    @Test
+    void loadRawFileRejectsUnknownExtension(@TempDir Path tempDir) throws Exception {
+        Path bad = tempDir.resolve("geo.public.scalars.parquet");
+        Files.writeString(bad, "not-used");
+        DebeziumPayloadFlattener flattener = new DebeziumPayloadFlattener();
+        try {
+            flattener.loadRawFile(spark, bad);
+            throw new AssertionError("expected IllegalArgumentException");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains(".avro"));
+        }
+    }
+
+    @Test
     void getOutputTablePathBuildsTablePath() {
         DebeziumPayloadFlattener flattener = new DebeziumPayloadFlattener();
         Path base = Path.of("/opt/data/iceberg");

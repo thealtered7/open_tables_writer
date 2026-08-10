@@ -79,6 +79,7 @@ public class Type2DimensionTransformer {
     private static final String BEGIN_OF_TIME_LITERAL = "1970-01-01 00:00:00";
     private static final Column END_OF_TIME = expr("timestamp '" + END_OF_TIME_LITERAL + "'");
     private static final Column BEGIN_OF_TIME = expr("timestamp '" + BEGIN_OF_TIME_LITERAL + "'");
+    private static final String NATURAL_KEY_COLUMN = "natural_key";
     /** SCD attributes preserved on closed history rows (record number/count are recomputed). */
     private static final List<String> PRESERVED_TYPE2_COLUMNS = List.of(
             VALID_FROM_COLUMN,
@@ -86,7 +87,8 @@ public class Type2DimensionTransformer {
             IS_CURRENT_COLUMN,
             PRIMARY_KEY_COLUMN,
             VERSION_KEY_COLUMN,
-            IS_DELETED_COLUMN);
+            IS_DELETED_COLUMN,
+            NATURAL_KEY_COLUMN);
     private static final Set<String> TYPE2_COLUMNS = Set.of(
             VALID_FROM_COLUMN,
             VALID_TO_COLUMN,
@@ -96,7 +98,6 @@ public class Type2DimensionTransformer {
             IS_DELETED_COLUMN,
             RECORD_NUMBER_COLUMN,
             RECORD_COUNT_COLUMN);
-    private static final String NATURAL_KEY_COLUMN = "natural_key";
 
     private final Observability observability;
     private final DatapipelinesClient datapipelinesClient;
@@ -269,10 +270,8 @@ public class Type2DimensionTransformer {
         Column isCurrent = validTo.equalTo(END_OF_TIME);
         Column primaryKey = concat(
                 col(ID_COLUMN).cast("string"), lit("-"), col(SOURCE_LSN_COLUMN).cast("string"));
-        Column naturalKey = col(ID_COLUMN);
 
         Dataset<Row> scdRows = tipAndIncoming
-                .withColumn(NATURAL_KEY_COLUMN, naturalKey)
                 .withColumn(NEXT_UPDATED_AT_COLUMN, nextUpdatedAt)
                 .withColumn(VALID_FROM_COLUMN, validFrom)
                 .withColumn(VALID_TO_COLUMN, validTo)
@@ -284,7 +283,8 @@ public class Type2DimensionTransformer {
 
         Dataset<Row> combined =
                 historyRows == null ? scdRows : scdRows.unionByName(historyRows, true);
-        return withRecordNumbering(combined);
+        // Derive after history union so closed versions are not MERGEd with null natural_key.
+        return withRecordNumbering(combined.withColumn(NATURAL_KEY_COLUMN, col(ID_COLUMN)));
     }
 
     /**
@@ -403,6 +403,7 @@ public class Type2DimensionTransformer {
                 .withColumn(IS_CURRENT_COLUMN, lit(true))
                 .withColumn(IS_DELETED_COLUMN, lit(true))
                 .withColumn(PRIMARY_KEY_COLUMN, primaryKey)
+                .withColumn(NATURAL_KEY_COLUMN, col(ID_COLUMN))
                 .withColumn(VERSION_KEY_COLUMN, versionKey())
                 .withColumn(RECORD_NUMBER_COLUMN, lit(1))
                 .withColumn(RECORD_COUNT_COLUMN, lit(1))

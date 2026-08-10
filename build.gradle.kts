@@ -60,6 +60,7 @@ dependencies {
 
     implementation("org.apache.spark:spark-core_2.12:$sparkVersion")
     implementation("org.apache.spark:spark-sql_2.12:$sparkVersion")
+    implementation("org.apache.spark:spark-avro_2.12:$sparkVersion")
     implementation("io.delta:delta-spark_2.12:$deltaVersion")
     implementation("org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:$icebergVersion")
 

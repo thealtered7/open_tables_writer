@@ -107,7 +107,7 @@ public class IcebergTableWriter implements TableWriter {
 
         log.info("table FQN: {}", tableFQN);
         DebeziumPayloadFlattener flattener = new DebeziumPayloadFlattener(observability);
-        Dataset<Row> raw = flattener.loadJsonLines(spark, inputFilePath);
+        Dataset<Row> raw = flattener.loadRawFile(spark, inputFilePath);
         Dataset<Row> flat = flattener.flattenPayload(raw);
         Dataset<Row> withTimestamps = flattener.convertTimestampColumns(flat);
         withTimestamps.show(10, false);

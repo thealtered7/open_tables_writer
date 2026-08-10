@@ -15,6 +15,14 @@ class CdcInputFileNamesTest {
     }
 
     @Test
+    void parsesPgoutputFlushAvroFilename() {
+        assertEquals(
+                "geo.public.scalars",
+                CdcInputFileNames.tableFqnFromFileName(
+                        "geo.public.scalars-2026-06-07_20-07-52-983-000001.avro"));
+    }
+
+    @Test
     void parsesLegacyFilename() {
         assertEquals(
                 "geo.public.scalars",
@@ -24,5 +32,10 @@ class CdcInputFileNamesTest {
     @Test
     void stripsJsonlSuffixWhenNoTimestampPattern() {
         assertEquals("custom.table", CdcInputFileNames.tableFqnFromFileName("custom.table.jsonl"));
+    }
+
+    @Test
+    void stripsAvroSuffixWhenNoTimestampPattern() {
+        assertEquals("custom.table", CdcInputFileNames.tableFqnFromFileName("custom.table.avro"));
     }
 }

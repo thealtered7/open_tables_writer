@@ -183,6 +183,10 @@ class Type2DimensionTransformerTest {
         assertEquals(3, ((Number) v3.getAs("_record_number")).intValue());
         assertEquals(3, ((Number) v3.getAs("_record_count")).intValue());
         assertTrue(v3.getBoolean(v3.fieldIndex("_is_current")));
+        // Closed history must keep natural_key (not null after re-MERGE).
+        assertEquals(1L, ((Number) v1.getAs("natural_key")).longValue());
+        assertEquals(1L, ((Number) v2.getAs("natural_key")).longValue());
+        assertEquals(1L, ((Number) v3.getAs("natural_key")).longValue());
 
         Row type1 = spark.table(toType1CatalogTable(table)).first();
         assertEquals(3, ((Number) type1.getAs("_record_number")).intValue());

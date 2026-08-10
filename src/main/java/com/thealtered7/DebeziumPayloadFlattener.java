@@ -7,6 +7,7 @@ import java.util.Calendar;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -44,19 +45,39 @@ public final class DebeziumPayloadFlattener {
         this.observability = Objects.requireNonNull(observability, "observability");
     }
 
-    public Dataset<Row> loadJsonLines(SparkSession spark, Path inputFilePath) {
+    /**
+     * Loads a raw extract file. Format is inferred from the extension: {@code .jsonl}/{@code .json}
+     * via Spark JSON, {@code .avro} via Spark Avro.
+     */
+    public Dataset<Row> loadRawFile(SparkSession spark, Path inputFilePath) {
         try {
             return observability.observeCallable(
                     Observability.DEBEZIUM_PAYLOAD_FLATTENER_PREFIX,
-                    "load_json_lines",
+                    "load_raw_file",
                     Map.of("input_file", inputFilePath.toString()),
                     () -> {
                         InputFileWaiter.requireFile(inputFilePath);
-                        return spark.read().json(inputFilePath.toString());
+                        String fileName = inputFilePath.getFileName().toString().toLowerCase(Locale.ROOT);
+                        if (fileName.endsWith(".avro")) {
+                            return spark.read().format("avro").load(inputFilePath.toString());
+                        }
+                        if (fileName.endsWith(".jsonl") || fileName.endsWith(".json")) {
+                            return spark.read().json(inputFilePath.toString());
+                        }
+                        throw new IllegalArgumentException(
+                                "Unsupported raw extract file extension for " + inputFilePath
+                                        + "; expected .jsonl, .json, or .avro");
                     });
+        } catch (RuntimeException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    /** Convenience alias for JSONL paths; prefer {@link #loadRawFile(SparkSession, Path)}. */
+    public Dataset<Row> loadJsonLines(SparkSession spark, Path inputFilePath) {
+        return loadRawFile(spark, inputFilePath);
     }
 
     public Dataset<Row> flattenPayload(Dataset<Row> raw) {
